@@ -4,3 +4,7 @@ openpyxl
 xlrd
 zhdate>=0.1
 chinese-calendar>=1.9.0
+fastapi
+uvicorn[standard]
+python-multipart
+httpx

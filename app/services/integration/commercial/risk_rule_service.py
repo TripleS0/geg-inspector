@@ -87,6 +87,8 @@ class CommercialRiskAnalysisService:
                 self._rule_r005(commercial_batch_id, name, weight, params, ctx)
             elif code == "R006":
                 self._rule_r006(commercial_batch_id, name, weight, params, ctx)
+            elif code == "R007":
+                self._rule_r007(commercial_batch_id, name, weight, params, ctx, legal_map)
 
         self._build_summaries(commercial_batch_id, ctx)
         ev_ct = int(
@@ -404,6 +406,57 @@ class CommercialRiskAnalysisService:
                     "对应询价单号": ordered[i : i + window],
                 }
                 self._insert_event(batch_id, "R006", title, weight, "轮换模式", ordered[i], ev)
+
+    def _rule_r007(
+        self,
+        batch_id: str,
+        title: str,
+        weight: float,
+        params: dict[str, Any],
+        ctx: dict[str, Any],
+        legal_map: dict[str, str],
+    ) -> None:
+        """协同串标强化：R001 或 R002 类重叠 + 两主体工商法定代表人为同人。"""
+        min_shared = int(params.get("min_shared_inquiries", 3))
+        min_j = float(params.get("min_jaccard", 0.8))
+        min_inq_j = int(params.get("min_inquiries_for_jaccard", 3))
+        company_inquiries: dict[str, set[str]] = ctx["company_inquiries"]
+        inquiry_companies: dict[str, set[str]] = ctx["inquiry_companies"]
+        companies = sorted({c for s in inquiry_companies.values() for c in s})
+        pairs: set[tuple[str, str]] = set()
+        for i, a in enumerate(companies):
+            for b in companies[i + 1 :]:
+                shared = len(company_inquiries[a] & company_inquiries[b])
+                if shared >= min_shared:
+                    pairs.add(tuple(sorted((a, b))))
+        filtered = [c for c in company_inquiries if len(company_inquiries[c]) >= min_inq_j]
+        for i, a in enumerate(filtered):
+            for b in filtered[i + 1 :]:
+                sa, sb = company_inquiries[a], company_inquiries[b]
+                inter = len(sa & sb)
+                uni = len(sa | sb)
+                if uni == 0:
+                    continue
+                jaccard = inter / uni
+                if jaccard >= min_j:
+                    pairs.add(tuple(sorted((a, b))))
+        for a, b in pairs:
+            la = (legal_map.get(a) or "").strip()
+            lb = (legal_map.get(b) or "").strip()
+            if not la or la != lb:
+                continue
+            shared_ct = len(company_inquiries[a] & company_inquiries[b])
+            ev = {
+                "口径": "企业间参标高度重叠（围标/串标口径）且工商法定代表人为同一人（协同串标强化）",
+                "企业A(规范化)": a,
+                "企业B(规范化)": b,
+                "法定代表人": la,
+                "共同询价数": shared_ct,
+                "围标阈值_共同询价": min_shared,
+                "串标阈值_Jaccard": min_j,
+            }
+            self._insert_event(batch_id, "R007", title, weight, a, "", ev)
+            self._insert_event(batch_id, "R007", title, weight, b, "", ev)
 
     def _build_summaries(self, batch_id: str, ctx: dict[str, Any]) -> None:
         rows = self._client.query_all(

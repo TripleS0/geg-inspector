@@ -5,3 +5,19 @@ build/
 *.spec
 *.sqlite3
 app/resources/config/db.json
+app/resources/config/qichacha_config.json
+
+# Offline desktop runtime data
+data/
+logs/
+exports/
+backend-dist/
+
+# Frontend tooling
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Tauri shell
+src-tauri/target/
+src-tauri/Cargo.lock

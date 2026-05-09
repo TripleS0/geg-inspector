@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS meta_ingest_logs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS meta_schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    description TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS ana_task (
+    task_id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS std_bank_txn (
     std_id INTEGER PRIMARY KEY AUTOINCREMENT,
     import_batch_id TEXT NOT NULL,
@@ -200,10 +218,32 @@ CREATE INDEX IF NOT EXISTS idx_rel_biz_enterprise_match_company ON rel_biz_enter
 CREATE INDEX IF NOT EXISTS idx_ana_risk_event_batch ON ana_risk_event(import_batch_id);
 CREATE INDEX IF NOT EXISTS idx_ana_risk_summary_batch ON ana_risk_summary(import_batch_id);
 
+CREATE TABLE IF NOT EXISTS meta_qichacha_query_log (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    query_keyword TEXT NOT NULL,
+    input_source TEXT NOT NULL,
+    api_status TEXT,
+    api_message TEXT,
+    order_number TEXT,
+    matched_name TEXT,
+    credit_code TEXT,
+    duration_ms INTEGER,
+    error_detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_qichacha_log_run ON meta_qichacha_query_log(run_id);
+CREATE INDEX IF NOT EXISTS idx_qichacha_log_created ON meta_qichacha_query_log(created_at DESC);
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (1, 'Initial local SQLite schema with import, analysis and task tables');
+
 INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version) VALUES
 ('R001', '围标疑似', 1, 1.0, '{"min_shared_inquiries":3,"min_companies_together":3,"note":"同一批项目中多家企业高频共同参标"}', 1),
 ('R002', '串标疑似', 1, 1.0, '{"min_inquiries":3,"min_pair_overlap_ratio":0.8,"note":"企业对在多个项目中高度同步出现"}', 1),
 ('R003', '陪标疑似', 1, 1.0, '{"min_participations":4,"max_win_rate":0.15,"min_co_winner_hits":3,"note":"长期少中标且频繁与同一中标方同场"}', 1),
 ('R004', '关联关系异常', 1, 1.0, '{"note":"同一询价下匹配到的工商主体法定代表人相同"}', 1),
 ('R005', '报价异常', 1, 1.0, '{"min_suppliers_with_price":3,"max_cv":0.02,"note":"同一询价多家含税单价离散度过低"}', 1),
-('R006', '轮流中标', 1, 1.0, '{"min_distinct_winners":3,"window_size":5,"note":"连续多单中标方在固定小集合内轮换"}', 1);
+('R006', '轮流中标', 1, 1.0, '{"min_distinct_winners":3,"window_size":5,"note":"连续多单中标方在固定小集合内轮换"}', 1),
+('R007', '协同串标强化', 1, 1.2, '{"min_shared_inquiries":3,"min_jaccard":0.8,"min_inquiries_for_jaccard":3,"note":"围标或串标口径重叠且两企业工商法定代表人为同一人"}', 1);

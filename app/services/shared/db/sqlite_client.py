@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
+from app.runtime_paths import default_db_path
+
 # raw 层系统列（预览时默认不向最终用户展示）
 _RAW_INTERNAL_COLUMNS = frozenset(
     {
@@ -28,8 +30,7 @@ class SqliteClient:
 
     def __init__(self, db_path: str | None = None) -> None:
         """Initialize sqlite database path."""
-        default_path = Path(__file__).resolve().parents[4] / "datafusionx.sqlite3"
-        self._db_path = Path(db_path) if db_path else default_path
+        self._db_path = Path(db_path) if db_path else default_db_path()
 
     @property
     def db_path(self) -> Path:
