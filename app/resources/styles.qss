@@ -1,0 +1,259 @@
+QWidget {
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 13px;
+    color: #0f172a;
+}
+
+QMainWindow {
+    background-color: #f3f6fc;
+}
+
+QLabel {
+    color: #1e293b;
+}
+
+QPushButton {
+    background-color: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background-color: #1d4ed8;
+}
+
+QPushButton:pressed {
+    background-color: #1e40af;
+}
+
+QPushButton:disabled {
+    background-color: #93b3f5;
+    color: #eef4ff;
+}
+
+QPushButton#secondaryButton {
+    background-color: #eff4ff;
+    color: #1f3763;
+    border: 1px solid #c8d8f2;
+}
+
+QPushButton#secondaryButton:hover {
+    background-color: #e5eefe;
+}
+
+QLineEdit,
+QDateTimeEdit,
+QTimeEdit,
+QComboBox,
+QPlainTextEdit,
+QListWidget {
+    background-color: #f9fbff;
+    border: 1px solid #cfdaef;
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+
+QLineEdit:focus,
+QDateTimeEdit:focus,
+QTimeEdit:focus,
+QComboBox:focus,
+QPlainTextEdit:focus,
+QListWidget:focus {
+    border: 1px solid #3b82f6;
+}
+
+QProgressBar {
+    min-height: 14px;
+    border: 1px solid #cad6ea;
+    border-radius: 7px;
+    background-color: #e8eef9;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    border-radius: 6px;
+    background-color: #2f6fed;
+}
+
+#navigationPanel {
+    background-color: #0e1a33;
+    border-right: 1px solid #1f3156;
+}
+
+#navigationBrandRow {
+    background-color: transparent;
+    border: 1px solid #1f3156;
+    border-radius: 10px;
+    padding: 10px 8px;
+}
+
+#navigationLogo {
+    background-color: transparent;
+    min-width: 42px;
+}
+
+#navigationTitle {
+    color: #f8fbff;
+    font-size: 17px;
+    font-weight: 700;
+    padding: 0;
+}
+
+#navigationSubtitle {
+    color: #90a9d5;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 0;
+}
+
+#navigationGroupTitle {
+    color: #9cb3dd;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 8px 6px 2px 6px;
+}
+
+#navigationPanel QScrollArea,
+#navigationPanel QScrollArea > QWidget > QWidget {
+    border: none;
+    background-color: transparent;
+}
+
+QPushButton#navigationButton {
+    color: #deebff;
+    background-color: transparent;
+    text-align: left;
+    border: none;
+    border-radius: 10px;
+    padding: 11px 12px;
+}
+
+QPushButton#navigationButton:hover {
+    background-color: #1f3359;
+}
+
+QPushButton#navigationButton:checked {
+    background-color: #2f6fed;
+    color: #ffffff;
+    font-weight: 700;
+}
+
+#pageTitle {
+    font-size: 28px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+#homeTitleImage {
+    background-color: transparent;
+    min-height: 56px;
+    padding: 0;
+}
+
+#homeSubtitle {
+    color: #334155;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+#hintLabel {
+    color: #4d5d78;
+    font-size: 13px;
+}
+
+#entryLabel {
+    color: #1d4f9b;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+#statusTip {
+    color: #334e7a;
+    background-color: #e6eefb;
+    border-top: 1px solid #cad8f1;
+    padding: 10px 14px;
+}
+
+#dashboardHero,
+#dashboardSection,
+#uploadToolbar,
+#uploadStatusCard,
+#desensToolbar,
+#desensStatusCard,
+#integrationSection {
+    background-color: #ffffff;
+    border: 1px solid #d7e1f2;
+    border-radius: 14px;
+    padding: 14px;
+}
+
+QPushButton#cardButton {
+    background-color: #ffffff;
+    color: #1f355e;
+    border: 1px solid #d0dbef;
+    border-radius: 14px;
+    padding: 16px 18px;
+    text-align: left;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QPushButton#cardButton:hover {
+    border: 1px solid #2f6fed;
+    background-color: #edf3ff;
+}
+
+#fileListWidget,
+#logWidget {
+    background-color: #ffffff;
+    border: 1px solid #cfdaed;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+#bankFilterDialog {
+    background-color: #f5f8fe;
+}
+
+#bankFilterGroup,
+#bankFilterAction {
+    background-color: #ffffff;
+    border: 1px solid #cfdaee;
+    border-radius: 12px;
+    margin-top: 4px;
+    padding: 10px;
+}
+
+#bankFilterSubGroup {
+    background-color: #f9fbff;
+    border: 1px solid #d7e2f4;
+    border-radius: 10px;
+    margin-top: 4px;
+    padding: 8px;
+}
+
+#bankFilterDialog QLineEdit,
+#bankFilterDialog QDateTimeEdit,
+#bankFilterDialog QTimeEdit,
+#bankFilterDialog QComboBox {
+    min-height: 26px;
+    max-height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+#bankFilterDialog QLabel,
+#bankFilterDialog QCheckBox,
+#bankFilterDialog QGroupBox {
+    font-size: 13px;
+}
+
+#bankDescView {
+    background-color: #ffffff;
+    border: 1px solid #cfdaed;
+    border-radius: 12px;
+    padding: 10px;
+}

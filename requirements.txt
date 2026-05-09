@@ -1,0 +1,6 @@
+PySide6
+pandas
+openpyxl
+xlrd
+zhdate>=0.1
+chinese-calendar>=1.9.0

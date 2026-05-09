@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec
+*.sqlite3
+app/resources/config/db.json
