@@ -40,6 +40,47 @@ export interface ModuleParams {
   special_amount_whitelist?: number[];
 }
 
+export interface CommercialAnalysisFilter {
+  company_name?: string;
+  purchaser?: string;
+  inquiry_no?: string;
+  winner?: string;
+  amount_min?: number | null;
+  amount_max?: number | null;
+  only_winners?: boolean;
+}
+
+export interface CommercialAnalysisRecord {
+  source: string;
+  inquiry_no: string;
+  purchaser: string;
+  company_name: string;
+  winner: string;
+  is_winner: boolean;
+  win_amount: number;
+  item_name: string;
+  quote_price: string;
+  quantity: string;
+  remark: string;
+}
+
+export interface CommercialAnalysisResponse {
+  records: CommercialAnalysisRecord[];
+  summary: {
+    record_count: number;
+    inquiry_count: number;
+    company_count: number;
+    winner_company_count: number;
+    total_win_amount: number;
+    company_summary: Array<Record<string, unknown>>;
+    purchaser_summary: Array<Record<string, unknown>>;
+    fund_links: Array<Record<string, unknown>>;
+    top_company_amounts: Array<[string, number]>;
+    top_purchaser_amounts: Array<[string, number]>;
+  };
+  description: string;
+}
+
 export interface RiskEvent {
   event_id: number;
   rule_code: string;
@@ -132,6 +173,43 @@ export interface QichachaLogItem {
   credit_code: string | null;
   duration_ms: number | null;
   error_detail: string | null;
+}
+
+export type BankTemplateType = "account_profile" | "txn_detail";
+
+export interface UserBankTemplate {
+  id?: number;
+  template_id?: string;
+  display_name: string;
+  template_type: BankTemplateType;
+  bank_display_name: string;
+  bank_keywords: string[];
+  sheet_keywords: string[];
+  field_map: Record<string, string[]>;
+  signature_columns: string[];
+  header_row_0based?: number | null;
+  match_priority: number;
+  template_group_id?: string | null;
+  direction_rules: Record<string, string>;
+  datetime_patterns?: Record<string, unknown> | null;
+  is_active?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BankTemplateAnalyzeResult {
+  file_name: string;
+  sheet_name: string;
+  template_type: BankTemplateType;
+  header_row_selected_0based: number;
+  header_row_candidates: Array<{ row_0based: number; score: number }>;
+  source_headers: string[];
+  suggested_mapping: Record<string, string>;
+  direction_distinct_values: string[];
+  datetime_analysis: { merged_preview?: string[] };
+  sample_row_count: number;
+  preview_columns: string[];
+  preview_grid: string[][];
 }
 
 const API_BASE = (() => {
@@ -253,6 +331,15 @@ export const api = {
       { method: "POST", body: JSON.stringify(params) }
     ),
 
+  commercialAnalysisFilterOptions: (batchId: string) =>
+    http<Record<string, string[]>>(`/api/commercial/${encodeURIComponent(batchId)}/analysis/filter-options`),
+
+  commercialAnalysisRecords: (batchId: string, filters: CommercialAnalysisFilter) =>
+    http<CommercialAnalysisResponse>(`/api/commercial/${encodeURIComponent(batchId)}/analysis/records`, {
+      method: "POST",
+      body: JSON.stringify(filters),
+    }),
+
   runRisk: (batchId: string, enterpriseBatchId?: string) =>
     http<{ task_id: string }>(`/api/commercial/${encodeURIComponent(batchId)}/risk/run`, {
       method: "POST",
@@ -277,6 +364,12 @@ export const api = {
 
   exportRiskReport: (batchId: string, outputPath?: string) =>
     http<{ task_id: string }>(`/api/export/commercial-risk/${encodeURIComponent(batchId)}`, {
+      method: "POST",
+      body: JSON.stringify({ output_path: outputPath || null }),
+    }),
+
+  exportCommercialAnalysisReport: (batchId: string, outputPath?: string) =>
+    http<{ task_id: string }>(`/api/export/commercial-analysis/${encodeURIComponent(batchId)}`, {
       method: "POST",
       body: JSON.stringify({ output_path: outputPath || null }),
     }),
@@ -311,7 +404,79 @@ export const api = {
       `/api/commercial/risk-rules/${encodeURIComponent(ruleCode)}`,
       { method: "PATCH", body: JSON.stringify(body) }
     ),
+
+  listBankTemplates: () => http<{ items: UserBankTemplate[] }>("/api/bank-templates"),
+
+  createBankTemplate: (body: UserBankTemplate) =>
+    http<UserBankTemplate>("/api/bank-templates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteBankTemplate: (templateId: string) =>
+    http<{ status: string; template_id: string }>(`/api/bank-templates/${encodeURIComponent(templateId)}`, {
+      method: "DELETE",
+    }),
+
+  clearBankTemplateMappings: (templateFingerprint: string) =>
+    http<{ status: string; template_fingerprint: string }>("/api/bank-templates/fingerprint-mappings/clear", {
+      method: "POST",
+      body: JSON.stringify({ template_fingerprint: templateFingerprint }),
+    }),
 };
+
+export async function analyzeBankTemplateSample(params: {
+  file: File;
+  sheetName: string;
+  templateType: BankTemplateType;
+  bankNameHint?: string;
+  headerRow0based?: number | null;
+}): Promise<BankTemplateAnalyzeResult> {
+  const form = new FormData();
+  form.append("file", params.file);
+  form.append("sheet_name", params.sheetName);
+  form.append("template_type", params.templateType);
+  form.append("bank_name_hint", params.bankNameHint || "银行数据");
+  if (params.headerRow0based !== null && params.headerRow0based !== undefined) {
+    form.append("header_row_0based", String(params.headerRow0based));
+  }
+  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = (await res.json()) as { detail?: string };
+      detail = data?.detail || JSON.stringify(data);
+    } catch {
+      // ignore
+    }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return (await res.json()) as BankTemplateAnalyzeResult;
+}
+
+export async function listBankTemplateSampleSheets(file: File): Promise<string[]> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample/sheets`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = (await res.json()) as { detail?: string };
+      detail = data?.detail || JSON.stringify(data);
+    } catch {
+      // ignore
+    }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  const data = (await res.json()) as { sheets?: string[] };
+  return data.sheets || [];
+}
 
 export async function queryQichachaBasicDetails(params: {
   keywordsText?: string;

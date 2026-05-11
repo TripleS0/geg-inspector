@@ -1,44 +1,73 @@
 # DataFusionX
 
-DataFusionX 是一个面向企业数据整合场景的离线桌面工具。当前版本提供可扩展工具平台壳层，并已接入本地 SQLite 的多来源整合流程（多 sheet 导入、模板识别、原始层入库、全字段合并导出）。
+DataFusionX 是一个离线运行的数据整合与分析桌面应用。当前项目已收敛为标准前后端架构：后端使用 FastAPI，前端使用 React，桌面壳使用 Tauri。旧的 PySide6 桌面方案不再作为开发、运行或交付路径。
 
-## 当前功能
+## 功能概览
 
-- 平台化主界面（左侧导航 + 右侧页面区）
-- 分组导航菜单与页面切换（Router 解耦）
-- 首页展示（项目名、Logo、简介、快捷入口卡片）
-- 数据上传页（选择文件、选择文件夹递归读取、清空列表、拖拽导入、查看数据预览）
-- 数据脱敏模块（沿用历史工具能力，支持 txt/xlsx/xls）
-- 数据整合流程（自动初始化数据库、批量入库；银行入口可标准化，商务网入口跳过银行标准化）
-- 全字段合并导出（`.xlsx`，银行/商务网均为单工作表 `全字段合并`，首列为“数据来源”）
+- 银行流水导入、模板录入、字段映射、标准化、查询分析与导出。
+- 商务网数据导入、商务网分析、商务网风险规则识别、统计报告导出。
+- 工商信息录入与商务企业匹配。
+- 数据脱敏、批次管理、数据表预览与清理。
+- 本地 SQLite 持久化，离线运行，不依赖外部数据库服务。
 
 ## 技术栈
 
-- Python 3.10+
-- PySide6
-- QSS 样式系统
-- 类型注解（typing）与 docstring
-- SQLite（本地文件数据库）
+- Backend：Python 3.10+、FastAPI、SQLite、pandas、openpyxl。
+- Frontend：React、TypeScript、Ant Design、ECharts、Vite。
+- Desktop：Tauri 1.x、Rust、PyInstaller 打包的本地 FastAPI 后端。
 
-## 运行方式
+## 项目结构
 
-### A. 经典 PySide6 桌面版（默认）
-
-```bash
-pip install -r requirements.txt
-python main.py
+```text
+DataFusionX/
+├── backend/
+│   ├── main.py                 # FastAPI 应用入口
+│   ├── entry.py                # PyInstaller 后端 exe 入口
+│   ├── app/
+│   │   ├── application/        # 用例层
+│   │   ├── services/           # 业务服务层
+│   │   ├── resources/          # SQL、配置示例等后端资源
+│   │   └── runtime_paths.py    # 本地数据/导出/上传目录策略
+│   └── tests/                  # 后端测试
+├── frontend/
+│   ├── src/                    # React 页面、API client、主题
+│   ├── package.json
+│   └── vite.config.ts
+├── src-tauri/
+│   ├── src/main.rs             # 桌面壳，负责拉起 backend.exe
+│   ├── Cargo.toml
+│   └── tauri.conf.json
+├── scripts/
+│   ├── build_backend.py        # 构建 backend-dist/backend.exe
+│   └── build_desktop.ps1       # 构建前端、后端与 Tauri 安装包
+├── legacy/pyside6/             # 旧 PySide6 代码，仅保留历史参考
+├── data/                       # 本地运行数据，Git 忽略
+├── exports/                    # 导出文件，Git 忽略
+├── requirements.txt
+└── README.md
 ```
 
-### B. 离线 Web 桌面版（FastAPI + React + Tauri）
+## 开发运行
 
-后端（FastAPI）：
+### 1. 安装后端依赖
 
 ```bash
 pip install -r requirements.txt
+```
+
+### 2. 启动 FastAPI 后端
+
+```bash
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765
 ```
 
-前端（React + Ant Design + ECharts）：
+后端默认会在项目根目录创建并使用：
+
+- 数据库：`data/datafusionx.sqlite3`
+- 上传缓存：`data/uploads/`
+- 导出目录：`exports/`
+
+### 3. 启动 React 前端
 
 ```bash
 cd frontend
@@ -46,195 +75,146 @@ npm install
 npm run dev
 ```
 
-前端默认通过 Vite 反向代理 `/api` 到 `127.0.0.1:8765`，因此开发期可以分别启动后端和前端，浏览器访问 `http://127.0.0.1:5173`。
+开发期访问 `http://127.0.0.1:5173`。前端默认通过 Vite 代理访问 `http://127.0.0.1:8765/api`。
 
-桌面壳（Tauri）：
+## 桌面版开发联调
+
+需要先安装 Rust 与 Tauri CLI：
 
 ```bash
-# 一次性安装 Rust 工具链与 Tauri CLI
 cargo install tauri-cli --version "^1.6"
+```
 
-# 开发联调（自动起前端 dev server）
+联调桌面壳：
+
+```bash
 cargo tauri dev --manifest-path src-tauri/Cargo.toml
+```
 
-# 打包：先把 Python 后端打成 backend-dist/backend.exe
-python build_backend.py
-# 再打包 Tauri 安装包，会把 backend-dist 与 frontend/dist 一并嵌入
+开发联调时，Tauri 会启动前端 dev server；生产打包时，Tauri 会加载 `frontend/dist` 并拉起内置 `backend.exe`。
+
+## 打包本地桌面版
+
+### 方式 A：一键脚本
+
+```powershell
+.\scripts\build_desktop.ps1
+```
+
+脚本会按顺序执行：
+
+1. `npm --prefix frontend install`
+2. `npm --prefix frontend run build`
+3. `python scripts/build_backend.py`
+4. `cargo tauri build --manifest-path src-tauri/Cargo.toml`
+
+安装包输出位置：
+
+```text
+src-tauri/target/release/bundle/
+```
+
+**C: 空间不足**：可将 Rust 的 `CARGO_HOME`、`RUSTUP_HOME` 与用户 `TEMP/TMP` 指到 D:（默认 `D:\GDNY_tuomi\rust-on-d`），并可选复制原 `%USERPROFILE%\.cargo`、`.rustup`：
+
+```powershell
+.\scripts\setup_rust_on_d.ps1 -CopyFromDefaultProfile -SetUserTemp
+```
+
+执行后**完全退出 Cursor 与所有终端**再打开，然后 `cargo --version`；再在空间充足的盘上执行 `cargo install tauri-cli`。
+
+### 方式 B：分步构建
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+
+python scripts/build_backend.py
 cargo tauri build --manifest-path src-tauri/Cargo.toml
 ```
 
-数据路径与配置：
-
-- 默认数据库：`<exe 同级>/data/datafusionx.sqlite3`
-- 默认导出目录：`<exe 同级>/exports/`
-- 可通过环境变量 `DATAFUSIONX_HOME` 重定向整个数据根目录
-- 可通过 `DATAFUSIONX_DB_PATH` 单独覆盖数据库路径
-- Tauri 启动时会自动选择空闲端口拉起 `backend.exe`，并通过 `window.DATAFUSIONX_API_BASE` 注入到前端
-
-## 项目结构说明
+`scripts/build_backend.py` 会把后端打包为：
 
 ```text
-project_root/
-│
-├── main.py
-├── app/
-│   ├── main_window.py
-│   ├── navigation.py
-│   ├── router.py
-│   │
-│   ├── pages/
-│   │   ├── home_page.py
-│   │   ├── desensitization_page.py
-│   │   ├── integration_select_page.py
-│   │   ├── upload_page.py
-│   │   ├── process_page.py
-│   │   └── export_page.py
-│   │
-│   ├── widgets/
-│   │   ├── file_list_widget.py
-│   │   ├── log_widget.py
-│   │   └── card_button.py
-│   │
-│   ├── services/
-│   │   ├── desensitization/
-│   │   │   └── desensitizer_service.py
-│   │   ├── integration/
-│   │   │   ├── factory.py
-│   │   │   ├── bank/
-│   │   │   │   ├── ingest_service.py
-│   │   │   │   ├── mapping_service.py
-│   │   │   │   └── export_service.py
-│   │   │   ├── commercial/
-│   │   │   │   ├── ingest_service.py
-│   │   │   │   ├── mapping_service.py
-│   │   │   │   └── export_service.py
-│   │   │   └── common/
-│   │   │       └── bootstrap.py
-│   │   └── shared/
-│   │       └── db/
-│   │           └── sqlite_client.py
-│   │
-│   └── resources/
-│       ├── styles.qss
-│       ├── icons/
-│       ├── config/db.example.json
-│       └── sql/bootstrap_sqlite.sql
-│
-├── requirements.txt
-├── version.txt
-├── README.md
-└── .gitignore
+backend-dist/backend.exe
 ```
 
-- `main.py`：应用入口，负责启动 `QApplication`、加载全局 QSS、设置窗口图标并创建主窗口。
-- `app/main_window.py`：主窗口壳层，组合左侧导航与右侧页面容器，管理路由注册和页面切换。
-- `app/navigation.py`：左侧导航组件，负责菜单分组渲染、选中高亮、品牌区（logo+标题）显示与路由信号发射。
-- `app/router.py`：页面路由中心，封装 `QStackedWidget` 的注册、别名映射和切换逻辑，降低页面耦合。
+Tauri 打包时会将 `frontend/dist` 与 `backend-dist` 一起嵌入安装包。
 
-- `app/pages/`：业务页面层，每个文件一个页面类，便于独立扩展。
-- `app/pages/home_page.py`：工具平台首页，展示品牌信息与工具入口卡片（数据整合/数据脱敏/其他）。
-- `app/pages/integration_select_page.py`：数据整合来源选择页，提供商务网/银行/其他数据入口选择。
-- `app/pages/upload_page.py`：上传页（可用），支持文件选择、文件夹递归读取、拖拽导入、清空列表、一键自动处理并导出。
-- `app/pages/desensitization_page.py`：数据脱敏页，支持批处理、进度和日志展示。
-- `app/pages/process_page.py`：处理状态示例页（当前为模拟），用于未来接入真实处理任务进度。
-- `app/pages/export_page.py`：导出结果示例页（当前为模拟），用于未来接入真实导出逻辑。
+## 本地数据库与历史数据
 
-- `app/widgets/`：可复用 UI 组件层。
-- `app/widgets/file_list_widget.py`：文件列表组件，负责文件路径展示和去重添加。
-- `app/widgets/log_widget.py`：日志组件，提供只读、可追加的日志输出能力。
-- `app/widgets/card_button.py`：卡片按钮组件，统一首页工具卡片交互样式。
+SQLite 是本地文件数据库，不需要安装数据库服务。为避免升级或重新打包导致历史数据丢失，运行目录策略如下：
 
-- `app/resources/styles.qss`：全局样式文件，统一配色、按钮状态、导航高亮、卡片与页面视觉风格。
-- `app/resources/icons/`：应用图标与品牌图片资源目录（如 `logo.png`、`logo.ico`、`quan_ming.png`）。
-- `app/resources/sql/bootstrap_sqlite.sql`：初始化 SQLite 核心表的 SQL。
-- `app/services/desensitization/desensitizer_service.py`：数据脱敏服务入口模块。
-- `app/services/integration/factory.py`：按来源类型（bank/commercial/other）选择对应服务实现。
-- `app/services/integration/bank/ingest_service.py`：银行来源导入（含表头自动识别、伪 `.xls` HTML 识别）。
-- `app/services/integration/bank/mapping_service.py`：银行来源标准化写入服务。
-- `app/services/integration/bank/export_service.py`：银行全字段合并导出服务（单工作表，逐行“数据来源”追溯）。
-- `app/services/integration/commercial/`：商务网来源服务目录（流程上与银行入口分流，导出同为单工作表）。
-- `app/services/integration/common/bootstrap.py`：本地 SQLite 表结构初始化执行器。
-- `app/services/shared/db/sqlite_client.py`：SQLite 连接与事务封装（全工具共用）。
-- 数据整合来源区分：`bank`（银行数据）、`commercial`（商务网数据）、`other`（其他数据）。
-- 商务网入口默认不写入银行标准层，仅做原始层入库与全字段合并导出。
-- `requirements.txt`：Python 依赖清单。
-- `version.txt`：版本元信息文件，记录当前交付版本号、构建时间、可执行文件名和发布说明。
-- `.gitignore`：Git 忽略规则。
-- `README.md`：项目说明与使用文档。
-
-## 打包为 .exe（Windows）
-
-先安装打包工具：
-
-```bash
-pip install pyinstaller
-```
-
-执行打包命令（窗口程序、单文件、使用指定图标与命名）：
-
-```bash
-python -m PyInstaller --noconfirm --clean --windowed --onefile --icon "app/resources/icons/logo.ico" --version-file "version.txt" --add-data "app/resources;app/resources" --name "数据处理工具-广东电力开发有限公司-版本v1.0.0" main.py
-```
-
-打包完成后可执行文件默认位于 `dist/` 目录，例如：
-
-- `dist/数据处理工具-广东电力开发有限公司-版本vx.x.x.exe`
-
-建议在项目根目录下固定一个发布文件夹（例如 `release/`）用于存放最终交付版本，避免和临时构建文件混在一起。
-
-PowerShell 示例（打包后自动归档到 `release/`）：
+- 浏览器开发模式：默认使用项目根目录下的 `data/datafusionx.sqlite3`。
+- Tauri 桌面模式：桌面壳启动后端时会传入 `DATAFUSIONX_HOME`，后端会把数据库、上传缓存和导出目录写入稳定的本地应用数据目录。未手动设置时，Windows 上通常为 `%LOCALAPPDATA%\com.datafusionx.desktop\runtime`（其下仍有 `data/`、`exports/`、`logs/` 等，与开发模式结构一致）。
+- 手动覆盖整个运行数据根目录：
 
 ```powershell
-New-Item -ItemType Directory -Force -Path "release" | Out-Null
-pyinstaller --noconfirm --clean --windowed --onefile --icon "app/resources/icons/logo.ico" --name "数据处理工具-广东电力开发有限公司-版本vx.x.x" main.py
-Copy-Item "dist/数据处理工具-广东电力开发有限公司-版本vx.x.x.exe" "release/"
-Copy-Item "version.txt" "release/"
+$env:DATAFUSIONX_HOME="D:\DataFusionXRuntime"
 ```
 
-执行后目录说明：
+- 手动覆盖单独数据库文件：
 
-- `dist/`：PyInstaller 默认输出目录（每次打包会刷新）
-- `build/`：PyInstaller 构建中间文件
-- `release/`：你自己保存“可交付安装包/可执行文件”的目录（建议对外发送这个目录下的 `.exe + version.txt`）
+```powershell
+$env:DATAFUSIONX_DB_PATH="D:\DataFusionXRuntime\datafusionx.sqlite3"
+```
 
-## 离线 SQLite 运行说明
+优先级：
 
-### 1) 准备环境
+1. `DATAFUSIONX_DB_PATH`
+2. `DATAFUSIONX_HOME\data\datafusionx.sqlite3`
+3. 开发模式默认 `data/datafusionx.sqlite3`
 
-- SQLite 为 Python 内置，无需单独安装数据库服务。
-- 项目会在根目录自动生成本地数据库文件：`datafusionx.sqlite3`。
+备份建议：
 
-### 2) 安装依赖
+- 定期备份 `datafusionx.sqlite3`。
+- 迁移电脑时，复制完整运行数据目录，至少包含 `data/datafusionx.sqlite3` 与需要保留的 `exports/`。
+- 不要把 `data/`、`exports/`、`logs/` 提交到 Git；这些目录已在 `.gitignore` 中忽略。
+
+## 企查查配置
+
+可通过环境变量配置：
+
+```powershell
+$env:QICHACHA_APP_KEY="你的 AppKey"
+$env:QICHACHA_SECRET_KEY="你的 SecretKey"
+```
+
+也可在本地运行数据目录放置：
+
+```text
+data/qichacha_config.json
+```
+
+格式参考：
+
+```text
+backend/app/resources/config/qichacha_config.example.json
+```
+
+不要提交包含真实密钥的配置文件。
+
+## 验证命令
+
+后端测试：
 
 ```bash
-pip install -r requirements.txt
+python -m unittest discover -s backend/tests -t backend
 ```
 
-### 3) 启动工具并初始化库表
+前端构建：
 
 ```bash
-python main.py
+npm --prefix frontend run build
 ```
 
-- 点击 `导出全字段合并` 时会自动执行初始化（无需手动点“初始化数据库”）。
+后端打包：
 
-### 5) 银行/商务网数据整合与导出
+```bash
+python scripts/build_backend.py
+```
 
-- 添加 `.xlsx/.xls` 文件（支持多 sheet、支持拖拽、支持“伪 `.xls`（HTML）”识别）。
-- 点击 `导出全字段合并`：自动执行初始化 -> 入库 -> （银行入口标准化 / 商务网入口跳过标准化）-> 导出 `.xlsx`。
-- 银行与商务网导出文件均仅包含一个工作表 `全字段合并`：
-  - 首列 `数据来源`：逐行对应“原文件名(去扩展)+工作表名”
-  - 银行导出会对连续相同 `数据来源` 做纵向合并单元格
-  - 后续列：本批次识别到的业务字段并集（商务网按固定输出列对齐）
-  - 默认样式：冻结首行、列宽按内容自适应、单元格自动换行，确保内容完整展示
-### 5) 备份建议（离线）
+## 旧 PySide6 代码
 
-- 直接备份项目根目录的 `datafusionx.sqlite3`。
-- 建议每天复制一份到 `backup/` 目录并按日期命名。
-
-## 后续规划
-
-- Excel 解析能力接入
-- 多源数据融合流程编排
-- 插件化扩展机制（工具动态注册）
-- 打包为 Windows `.exe` 分发
+`legacy/pyside6/` 仅用于保留历史代码参考，不参与当前依赖安装、开发运行或桌面打包。新的桌面版只维护 FastAPI + React + Tauri 路线。

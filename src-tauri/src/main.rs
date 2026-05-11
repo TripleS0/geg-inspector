@@ -5,6 +5,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,11 +66,29 @@ fn locate_backend(handle: &tauri::AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn datafusionx_home(handle: &tauri::AppHandle) -> PathBuf {
+    if let Ok(home) = std::env::var("DATAFUSIONX_HOME") {
+        return PathBuf::from(home);
+    }
+    if let Some(app_data) = handle.path_resolver().app_data_dir() {
+        return app_data.join("runtime");
+    }
+    if let Ok(exe) = tauri::utils::platform::current_exe() {
+        if let Some(parent) = exe.parent() {
+            return parent.join("datafusionx-runtime");
+        }
+    }
+    PathBuf::from("datafusionx-runtime")
+}
+
 fn spawn_backend(handle: &tauri::AppHandle, port: u16) -> Option<Child> {
     let exe = locate_backend(handle)?;
+    let home = datafusionx_home(handle);
+    let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(exe);
     cmd.env("DATAFUSIONX_BACKEND_PORT", port.to_string())
         .env("DATAFUSIONX_HOST", "127.0.0.1")
+        .env("DATAFUSIONX_HOME", home)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     cmd.spawn().ok()

@@ -4,8 +4,8 @@ dist/
 build/
 *.spec
 *.sqlite3
-app/resources/config/db.json
-app/resources/config/qichacha_config.json
+backend/app/resources/config/db.json
+backend/app/resources/config/qichacha_config.json
 
 # Offline desktop runtime data
 data/

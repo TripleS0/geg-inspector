@@ -2,18 +2,23 @@
 
 import json
 import shutil
+import sys
 import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.application.analysis_use_cases import BankAnalysisUseCase, CommercialRiskUseCase
+from app.application.analysis_use_cases import BankAnalysisUseCase, CommercialAnalysisUseCase, CommercialRiskUseCase
 from app.application.risk_config_use_cases import RiskConfigUseCase
 from app.application.bootstrap import bootstrap_database
 from app.application.dataset_use_cases import DatasetUseCase
@@ -22,7 +27,14 @@ from app.application.import_use_cases import EnterpriseImportUseCase, ImportUseC
 from app.application.task_store import TaskStore
 from app.runtime_paths import exports_dir, uploads_dir
 from app.services.integration.bank.analysis_modules import ModuleParams
+from app.services.integration.bank.bank_template_wizard_service import (
+    BankTemplateWizardService,
+    validate_field_map,
+)
+from app.services.integration.bank.mapping_service import BankMappingService
 from app.services.integration.bank.query_service import BankQueryFilters
+from app.services.integration.commercial.analysis_service import CommercialAnalysisFilters
+from app.services.integration.bank.user_bank_template_repository import UserBankTemplateRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 from app.services.desensitizer_service import collect_supported_files, process_single_file
 from app.services.integration.qichacha_client import (
@@ -87,6 +99,25 @@ class BankFilterRequest(BaseModel):
         return BankQueryFilters(**data)
 
 
+class CommercialAnalysisFilterRequest(BaseModel):
+    """Commercial bid analysis filter payload."""
+
+    company_name: str = ""
+    purchaser: str = ""
+    inquiry_no: str = ""
+    winner: str = ""
+    amount_min: Optional[float] = None
+    amount_max: Optional[float] = None
+    only_winners: bool = False
+
+    def to_filters(self) -> CommercialAnalysisFilters:
+        if hasattr(self, "model_dump"):
+            data = self.model_dump()
+        else:  # pragma: no cover - pydantic v1 fallback
+            data = self.dict()
+        return CommercialAnalysisFilters(**data)
+
+
 class ModuleRequest(BaseModel):
     """Bank fixed-module request."""
 
@@ -134,6 +165,48 @@ class RiskRulePatchBody(BaseModel):
     enabled: Optional[int] = None
 
 
+class UserBankTemplatePayload(BaseModel):
+    """创建/更新用户银行模板。"""
+
+    display_name: str = Field(..., min_length=1)
+    template_type: str = Field(..., description="account_profile 或 txn_detail")
+    bank_display_name: str = Field(..., min_length=1)
+    bank_keywords: List[str] = Field(default_factory=list)
+    sheet_keywords: List[str] = Field(default_factory=list)
+    field_map: Dict[str, List[str]] = Field(default_factory=dict)
+    signature_columns: List[str] = Field(default_factory=list)
+    header_row_0based: Optional[int] = None
+    match_priority: int = 0
+    template_group_id: Optional[str] = None
+    direction_rules: Dict[str, str] = Field(default_factory=dict)
+    datetime_patterns: Optional[Dict[str, Any]] = None
+    template_id: Optional[str] = None
+
+
+class UserBankTemplatePatchBody(BaseModel):
+    """部分更新用户银行模板。"""
+
+    display_name: Optional[str] = None
+    template_type: Optional[str] = None
+    bank_display_name: Optional[str] = None
+    bank_keywords: Optional[List[str]] = None
+    sheet_keywords: Optional[List[str]] = None
+    field_map: Optional[Dict[str, List[str]]] = None
+    signature_columns: Optional[List[str]] = None
+    header_row_0based: Optional[int] = None
+    match_priority: Optional[int] = None
+    template_group_id: Optional[str] = None
+    direction_rules: Optional[Dict[str, str]] = None
+    datetime_patterns: Optional[Dict[str, Any]] = None
+    is_active: Optional[int] = None
+
+
+class ClearFingerprintMappingsBody(BaseModel):
+    """清除某指纹下的字段映射，便于重新标准化时重新种子映射。"""
+
+    template_fingerprint: str = Field(..., min_length=8)
+
+
 def _ensure_r007_rule_row() -> None:
     """旧库可能无 R007，幂等补种。"""
     SqliteClient().execute(
@@ -151,8 +224,8 @@ def _ensure_r007_rule_row() -> None:
 QICHACHA_503_DETAIL = (
     "未配置企查查密钥：请设置环境变量 QICHACHA_APP_KEY / QICHACHA_SECRET_KEY，"
     "或在以下任一 JSON 文件中填写 app_key 与 secret_key（格式见 "
-    "app/resources/config/qichacha_config.example.json）："
-    "data/qichacha_config.json、app/resources/config/qichacha_config.json、"
+    "backend/app/resources/config/qichacha_config.example.json）："
+    "data/qichacha_config.json、backend/app/resources/config/qichacha_config.json、"
     "或临时使用 qichacha_config.example.json（勿将含密钥的示例文件提交 Git）。"
     "环境变量优先。修改后请重启后端。"
 )
@@ -543,6 +616,17 @@ def create_app() -> FastAPI:
     def bank_module(batch_id: str, module_id: str, payload: ModuleRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().run_module(batch_id, module_id, payload.to_params())
 
+    @app.get("/api/commercial/{batch_id}/analysis/filter-options")
+    def commercial_analysis_filter_options(batch_id: str) -> Dict[str, List[str]]:
+        return CommercialAnalysisUseCase().filter_options(batch_id)
+
+    @app.post("/api/commercial/{batch_id}/analysis/records")
+    def commercial_analysis_records(
+        batch_id: str,
+        payload: CommercialAnalysisFilterRequest,
+    ) -> Dict[str, Any]:
+        return CommercialAnalysisUseCase().query_records(batch_id, payload.to_filters())
+
     @app.post("/api/commercial/{batch_id}/risk/run")
     def run_risk(
         batch_id: str,
@@ -626,6 +710,18 @@ def create_app() -> FastAPI:
             lambda: ExportUseCase().export_commercial_risk_report(batch_id, payload.output_path).to_dict(),
         )
 
+    @app.post("/api/export/commercial-analysis/{batch_id}")
+    def export_commercial_analysis(
+        batch_id: str,
+        payload: ExportRequest,
+        background_tasks: BackgroundTasks,
+    ) -> Dict[str, str]:
+        return enqueue(
+            background_tasks,
+            "export_commercial_analysis",
+            lambda: ExportUseCase().export_commercial_analysis_report(batch_id, payload.output_path).to_dict(),
+        )
+
     @app.post("/api/qichacha/basic-details/query")
     async def qichacha_basic_query(
         keywords: Optional[str] = Form(None),
@@ -703,6 +799,205 @@ def create_app() -> FastAPI:
             )
         items = [dict(zip(keys, r)) for r in rows]
         return {"items": items}
+
+    def _user_tpl_dict(rec: Any) -> Dict[str, Any]:
+        return {
+            "id": rec.id,
+            "template_id": rec.template_id,
+            "display_name": rec.display_name,
+            "template_type": rec.template_type,
+            "bank_display_name": rec.bank_display_name,
+            "bank_keywords": rec.bank_keywords,
+            "sheet_keywords": rec.sheet_keywords,
+            "field_map": rec.field_map,
+            "signature_columns": rec.signature_columns,
+            "header_row_0based": rec.header_row_0based,
+            "match_priority": rec.match_priority,
+            "template_group_id": rec.template_group_id,
+            "direction_rules": rec.direction_rules,
+            "datetime_patterns": rec.datetime_patterns,
+            "is_active": rec.is_active,
+            "created_at": rec.created_at,
+            "updated_at": rec.updated_at,
+        }
+
+    def _validate_direction_rules(rules: Dict[str, str]) -> None:
+        allowed = {"收入", "支出", "未知"}
+        for k, v in rules.items():
+            if v not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"借贷规则值须为 收入/支出/未知，收到: {k} -> {v}",
+                )
+
+    @app.get("/api/bank-templates")
+    def list_user_bank_templates(
+        group_id: Optional[str] = Query(default=None),
+    ) -> Dict[str, Any]:
+        repo = UserBankTemplateRepository()
+        rows = repo.list_all()
+        if group_id and str(group_id).strip():
+            gid = str(group_id).strip()
+            rows = [r for r in rows if (r.template_group_id or "") == gid]
+        return {"items": [_user_tpl_dict(r) for r in rows]}
+
+    @app.post("/api/bank-templates/analyze-sample")
+    async def analyze_bank_template_sample(
+        file: UploadFile = File(...),
+        sheet_name: str = Form(""),
+        template_type: str = Form(...),
+        bank_name_hint: str = Form("银行数据"),
+        header_row_0based: Optional[str] = Form(None),
+    ) -> Dict[str, Any]:
+        if template_type not in ("account_profile", "txn_detail"):
+            raise HTTPException(status_code=400, detail="template_type 无效")
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in {".xlsx", ".xls"}:
+            raise HTTPException(status_code=400, detail="仅支持 .xlsx / .xls")
+        body = await file.read()
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(body)
+                tmp_path = Path(tmp.name)
+            hdr: Optional[int] = None
+            if header_row_0based is not None and str(header_row_0based).strip() != "":
+                try:
+                    hdr = int(str(header_row_0based).strip())
+                except ValueError as err:
+                    raise HTTPException(status_code=400, detail="header_row_0based 须为整数") from err
+            wiz = BankTemplateWizardService()
+            result = wiz.analyze(
+                file_path=tmp_path,
+                sheet_name=sheet_name.strip(),
+                template_type=template_type,
+                bank_name_hint=bank_name_hint.strip() or "银行数据",
+                header_row_0based=hdr,
+            )
+            return result
+        finally:
+            if tmp_path is not None and tmp_path.is_file():
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except PermissionError:
+                    pass
+
+    @app.post("/api/bank-templates/analyze-sample/sheets")
+    async def list_sheets_for_analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in {".xlsx", ".xls"}:
+            raise HTTPException(status_code=400, detail="仅支持 .xlsx / .xls")
+        body = await file.read()
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(body)
+                tmp_path = Path(tmp.name)
+            wiz = BankTemplateWizardService()
+            names = wiz.list_sheet_names(tmp_path)
+            return {"sheets": names}
+        finally:
+            if tmp_path is not None and tmp_path.is_file():
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except PermissionError:
+                    pass
+
+    @app.post("/api/bank-templates/fingerprint-mappings/clear")
+    def clear_fingerprint_mappings(payload: ClearFingerprintMappingsBody) -> Dict[str, Any]:
+        BankMappingService().clear_field_mappings(payload.template_fingerprint.strip())
+        return {"status": "ok", "template_fingerprint": payload.template_fingerprint.strip()}
+
+    @app.get("/api/bank-templates/{template_id}")
+    def get_user_bank_template(template_id: str) -> Dict[str, Any]:
+        repo = UserBankTemplateRepository()
+        rec = repo.get_by_template_id(template_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="模板不存在")
+        return _user_tpl_dict(rec)
+
+    @app.post("/api/bank-templates")
+    def create_user_bank_template(payload: UserBankTemplatePayload) -> Dict[str, Any]:
+        if payload.template_type not in ("account_profile", "txn_detail"):
+            raise HTTPException(status_code=400, detail="template_type 无效")
+        try:
+            validate_field_map(payload.template_type, payload.field_map)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        if payload.template_type == "txn_detail":
+            fm = payload.field_map
+            if "acct_no" not in fm or not fm.get("acct_no"):
+                raise HTTPException(status_code=400, detail="流水模板须映射 acct_no")
+            if "txn_amount" not in fm or not fm.get("txn_amount"):
+                raise HTTPException(status_code=400, detail="流水模板须映射 txn_amount")
+            if not (fm.get("txn_time_raw") or fm.get("txn_date")):
+                raise HTTPException(status_code=400, detail="流水模板须映射 txn_time_raw 或 txn_date")
+        else:
+            if "acct_no" not in payload.field_map or not payload.field_map.get("acct_no"):
+                raise HTTPException(status_code=400, detail="开户模板须映射 acct_no")
+            if "person_name" not in payload.field_map or not payload.field_map.get("person_name"):
+                raise HTTPException(status_code=400, detail="开户模板须映射 person_name")
+        _validate_direction_rules(payload.direction_rules)
+        repo = UserBankTemplateRepository()
+        tid = repo.create(
+            display_name=payload.display_name.strip(),
+            template_type=payload.template_type,
+            bank_display_name=payload.bank_display_name.strip(),
+            bank_keywords=[str(x).strip() for x in payload.bank_keywords if str(x).strip()],
+            sheet_keywords=[str(x).strip() for x in payload.sheet_keywords if str(x).strip()],
+            field_map={k: [str(x) for x in v] for k, v in payload.field_map.items()},
+            signature_columns=payload.signature_columns,
+            header_row_0based=payload.header_row_0based,
+            match_priority=payload.match_priority,
+            template_group_id=(payload.template_group_id or "").strip() or None,
+            direction_rules=payload.direction_rules,
+            datetime_patterns=payload.datetime_patterns,
+            template_id=(payload.template_id or "").strip() or None,
+        )
+        rec = repo.get_by_template_id(tid)
+        return _user_tpl_dict(rec) if rec else {"template_id": tid}
+
+    @app.patch("/api/bank-templates/{template_id}")
+    def patch_user_bank_template(template_id: str, payload: UserBankTemplatePatchBody) -> Dict[str, Any]:
+        repo = UserBankTemplateRepository()
+        existing = repo.get_by_template_id(template_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="模板不存在")
+        if payload.template_type is not None and payload.template_type not in ("account_profile", "txn_detail"):
+            raise HTTPException(status_code=400, detail="template_type 无效")
+        if payload.field_map is not None:
+            tt = payload.template_type or existing.template_type
+            try:
+                validate_field_map(tt, payload.field_map)
+            except ValueError as err:
+                raise HTTPException(status_code=400, detail=str(err)) from err
+        if payload.direction_rules is not None:
+            _validate_direction_rules(payload.direction_rules)
+        repo.update(
+            template_id,
+            display_name=payload.display_name,
+            template_type=payload.template_type,
+            bank_display_name=payload.bank_display_name,
+            bank_keywords=payload.bank_keywords,
+            sheet_keywords=payload.sheet_keywords,
+            field_map=payload.field_map,
+            signature_columns=payload.signature_columns,
+            header_row_0based=payload.header_row_0based,
+            match_priority=payload.match_priority,
+            template_group_id=payload.template_group_id,
+            direction_rules=payload.direction_rules,
+            datetime_patterns=payload.datetime_patterns,
+            is_active=payload.is_active,
+        )
+        rec = repo.get_by_template_id(template_id)
+        return _user_tpl_dict(rec) if rec else {}
+
+    @app.delete("/api/bank-templates/{template_id}")
+    def delete_user_bank_template(template_id: str) -> Dict[str, str]:
+        repo = UserBankTemplateRepository()
+        if not repo.delete(template_id):
+            raise HTTPException(status_code=404, detail="模板不存在")
+        return {"status": "deleted", "template_id": template_id}
 
     return app
 

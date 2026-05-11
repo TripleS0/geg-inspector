@@ -9,6 +9,8 @@ import {
   FundProjectionScreenOutlined,
   HomeOutlined,
   IdcardOutlined,
+  LineChartOutlined,
+  ProfileOutlined,
   SafetyOutlined,
 } from "@ant-design/icons";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -17,6 +19,8 @@ import ImportPage from "./pages/ImportPage";
 import BatchesPage from "./pages/BatchesPage";
 import TablesPage from "./pages/TablesPage";
 import BankAnalysisPage from "./pages/BankAnalysisPage";
+import BankTemplatesPage from "./pages/BankTemplatesPage";
+import CommercialAnalysisPage from "./pages/CommercialAnalysisPage";
 import CommercialRiskPage from "./pages/CommercialRiskPage";
 import DesensitizationPage from "./pages/DesensitizationPage";
 import QichachaIcPage from "./pages/QichachaIcPage";
@@ -54,7 +58,9 @@ function App() {
     if (path.startsWith("/batches")) return "batches";
     if (path.startsWith("/tables")) return "tables";
     if (path.startsWith("/desensitization")) return "desensitization";
+    if (path.startsWith("/bank-templates")) return "bank-templates";
     if (path.startsWith("/bank")) return "bank";
+    if (path.startsWith("/commercial-analysis")) return "commercial-analysis";
     if (path.startsWith("/risk")) return "risk";
     if (path.startsWith("/qichacha-ic")) return "qichacha";
     return "home";
@@ -94,6 +100,12 @@ function App() {
               case "bank":
                 navigate("/bank");
                 break;
+              case "bank-templates":
+                navigate("/bank-templates");
+                break;
+              case "commercial-analysis":
+                navigate("/commercial-analysis");
+                break;
               case "risk":
                 navigate("/risk");
                 break;
@@ -111,6 +123,8 @@ function App() {
             { key: "tables", icon: <DatabaseOutlined />, label: "数据表浏览" },
             { key: "desensitization", icon: <FileProtectOutlined />, label: "数据脱敏" },
             { key: "bank", icon: <BankOutlined />, label: "银行流水分析" },
+            { key: "bank-templates", icon: <ProfileOutlined />, label: "银行模板录入" },
+            { key: "commercial-analysis", icon: <LineChartOutlined />, label: "商务网分析" },
             { key: "risk", icon: <SafetyOutlined />, label: "商务网风险" },
             { key: "qichacha", icon: <IdcardOutlined />, label: "工商信息录入" },
           ]}
@@ -145,6 +159,8 @@ function App() {
             <Route path="/tables" element={<TablesPage />} />
             <Route path="/desensitization" element={<DesensitizationPage />} />
             <Route path="/bank" element={<BankAnalysisPage />} />
+            <Route path="/bank-templates" element={<BankTemplatesPage />} />
+            <Route path="/commercial-analysis" element={<CommercialAnalysisPage />} />
             <Route path="/risk" element={<CommercialRiskPage />} />
             <Route path="/qichacha-ic" element={<QichachaIcPage />} />
             <Route
