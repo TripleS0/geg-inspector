@@ -10,6 +10,12 @@ from app.services.integration.bank.mapping_service import BankMappingService
 from app.services.integration.commercial.export_service import CommercialExportService
 from app.services.integration.commercial.ingest_service import CommercialIngestService
 from app.services.integration.commercial.mapping_service import CommercialMappingService
+from app.services.integration.telecom.export_service import TelecomExportService
+from app.services.integration.telecom.ingest_service import TelecomIngestService
+from app.services.integration.telecom.mapping_service import TelecomMappingService
+from app.services.integration.wechat.export_service import WechatExportService
+from app.services.integration.wechat.ingest_service import WechatIngestService
+from app.services.integration.wechat.mapping_service import WechatMappingService
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,18 @@ def get_integration_bundle(source_type: str) -> IntegrationServiceBundle:
             ingest_cls=CommercialIngestService,
             mapping_cls=CommercialMappingService,
             export_cls=CommercialExportService,
+        )
+    if key == "wechat":
+        return IntegrationServiceBundle(
+            ingest_cls=WechatIngestService,
+            mapping_cls=WechatMappingService,
+            export_cls=WechatExportService,
+        )
+    if key == "telecom":
+        return IntegrationServiceBundle(
+            ingest_cls=TelecomIngestService,
+            mapping_cls=TelecomMappingService,
+            export_cls=TelecomExportService,
         )
     # bank/other currently share bank flow; keep extension point here.
     return IntegrationServiceBundle(

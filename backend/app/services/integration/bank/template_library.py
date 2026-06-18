@@ -186,6 +186,26 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
         },
         signature_columns=("客户账号", "核算账号", "对手方账号", "交易行号"),
     ),
+    BankTemplate(
+        template_id="ceb_txn_v1",
+        bank_display_name="光大银行",
+        bank_keywords=("光大银行", "光大", "ceb", "cebbank"),
+        sheet_keywords=("交易明细",),
+        header_row_hint=None,
+        field_map={
+            "person_name": ("客户姓名",),
+            "acct_no": ("客户账号", "账号", "卡号"),
+            "counterparty_name": ("对方名称", "对方户名"),
+            "counterparty_account": ("对方账号",),
+            "txn_date": ("交易日期",),
+            "txn_direction": ("借贷方向",),
+            "txn_amount": ("交易金额",),
+            "balance": ("账户余额",),
+            "summary": ("摘要",),
+            "remark": ("交易流水号",),
+        },
+        signature_columns=("交易日期", "交易流水号", "存入金额", "检出金额", "对方名称"),
+    ),
 )
 
 ACCOUNT_SHEET_HINTS: tuple[str, ...] = (

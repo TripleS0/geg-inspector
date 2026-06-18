@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from app.application.bootstrap import bootstrap_database
+from app.application.dataset_use_cases import DatasetUseCase
 from app.services.integration.commercial.ic_ingest_service import EnterpriseProfileIngestService
 from app.services.integration.factory import get_integration_bundle
 from app.services.shared.db.sqlite_client import SqliteClient
@@ -53,16 +54,24 @@ class ImportUseCase:
         file_paths: list[str],
         bank_name: str,
         source_type: str,
+        batch_name: str | None = None,
+        standardize: bool = True,
     ) -> ImportSummary:
         """Import files and run source-specific post-processing."""
         source_key = (source_type or "bank").strip().lower()
-        if source_key not in {"bank", "commercial"}:
-            raise ValueError("source_type 仅支持 bank 或 commercial")
+        if source_key not in {"bank", "commercial", "wechat", "telecom"}:
+            raise ValueError("source_type 仅支持 bank、commercial、wechat 或 telecom")
         bundle = get_integration_bundle(source_key)
         ingest_result = bundle.ingest_cls(self._client).ingest_files(file_paths, bank_name, source_key)
         standardized_rows = 0
-        if source_key == "bank":
+        if source_key == "bank" and standardize:
             standardized_rows = int(bundle.mapping_cls(self._client).standardize_batch(ingest_result.import_batch_id))
+        if batch_name and batch_name.strip():
+            DatasetUseCase(self._client).set_batch_name(
+                ingest_result.import_batch_id,
+                batch_name.strip(),
+                source_key,
+            )
         return ImportSummary(
             import_batch_id=ingest_result.import_batch_id,
             source_type=source_key,
@@ -81,9 +90,20 @@ class EnterpriseImportUseCase:
     def __init__(self, client: SqliteClient | None = None) -> None:
         self._client = bootstrap_database(client)
 
-    def import_enterprise_profiles(self, file_paths: list[str]) -> EnterpriseImportSummary:
+    def import_enterprise_profiles(
+        self,
+        file_paths: list[str],
+        *,
+        batch_name: str | None = None,
+    ) -> EnterpriseImportSummary:
         """Import enterprise files into the local enterprise profile table."""
         result = EnterpriseProfileIngestService(self._client).ingest_files(file_paths)
+        if batch_name and batch_name.strip():
+            DatasetUseCase(self._client).set_batch_name(
+                result.import_batch_id,
+                batch_name.strip(),
+                "enterprise",
+            )
         return EnterpriseImportSummary(
             import_batch_id=result.import_batch_id,
             source_type="enterprise",
@@ -92,9 +112,20 @@ class EnterpriseImportUseCase:
             failed_files=result.failed_files,
         )
 
-    def import_qichacha_flat_rows(self, rows: list[dict]) -> EnterpriseImportSummary:
+    def import_qichacha_flat_rows(
+        self,
+        rows: list[dict],
+        *,
+        batch_name: str | None = None,
+    ) -> EnterpriseImportSummary:
         """Import flattened Qichacha API rows as one enterprise batch."""
         result = EnterpriseProfileIngestService(self._client).ingest_qichacha_flat_rows(rows)
+        if batch_name and batch_name.strip():
+            DatasetUseCase(self._client).set_batch_name(
+                result.import_batch_id,
+                batch_name.strip(),
+                "enterprise",
+            )
         return EnterpriseImportSummary(
             import_batch_id=result.import_batch_id,
             source_type="enterprise",

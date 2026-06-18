@@ -1,0 +1,19 @@
+# 国内网络拉取 Docker Hub 超时时使用：
+#   docker compose -f docker-compose.yml -f docker-compose.mirror.cn.yml up -d --build
+# 或直接运行 start-mirror.sh / start-mirror.bat
+
+services:
+  backend:
+    build:
+      args:
+        PYTHON_IMAGE: docker.m.daocloud.io/library/python:3.11-slim-bookworm
+        APT_MIRROR: mirrors.tuna.tsinghua.edu.cn
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        # x86 Linux 服务器构建期预下载 OCR 模型可设 PRELOAD_OCR_MODELS: "1"
+        PRELOAD_OCR_MODELS: "0"
+
+  frontend:
+    build:
+      args:
+        NODE_IMAGE: docker.m.daocloud.io/library/node:20-alpine
+        NGINX_IMAGE: docker.m.daocloud.io/library/nginx:alpine

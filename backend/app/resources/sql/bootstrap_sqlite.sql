@@ -258,8 +258,129 @@ CREATE TABLE IF NOT EXISTS meta_qichacha_query_log (
 CREATE INDEX IF NOT EXISTS idx_qichacha_log_run ON meta_qichacha_query_log(run_id);
 CREATE INDEX IF NOT EXISTS idx_qichacha_log_created ON meta_qichacha_query_log(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS std_case (
+    case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rel_case_batch (
+    rel_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id INTEGER NOT NULL,
+    import_batch_id TEXT NOT NULL UNIQUE,
+    source_type TEXT NOT NULL DEFAULT '',
+    bound_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (case_id) REFERENCES std_case(case_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_rel_case_batch_case ON rel_case_batch(case_id);
+
+CREATE TABLE IF NOT EXISTS meta_import_batch (
+    import_batch_id TEXT PRIMARY KEY,
+    batch_name TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_meta_import_batch_updated ON meta_import_batch(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS std_person (
+    person_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    role_tag TEXT NOT NULL DEFAULT 'unknown',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (case_id) REFERENCES std_case(case_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_std_person_case ON std_person(case_id);
+
+CREATE TABLE IF NOT EXISTS std_person_link (
+    link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,
+    identifier_type TEXT NOT NULL,
+    identifier_value TEXT NOT NULL,
+    identifier_norm TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_ref_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (person_id) REFERENCES std_person(person_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_std_person_link_person ON std_person_link(person_id);
+CREATE INDEX IF NOT EXISTS idx_std_person_link_norm ON std_person_link(identifier_type, identifier_norm);
+
+CREATE TABLE IF NOT EXISTS rel_identifier_candidate (
+    candidate_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id INTEGER NOT NULL,
+    identifier_type TEXT NOT NULL,
+    identifier_norm TEXT NOT NULL,
+    display_value TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    source_batch_id TEXT NOT NULL DEFAULT '',
+    source_ref_json TEXT NOT NULL DEFAULT '{}',
+    review_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (case_id) REFERENCES std_case(case_id) ON DELETE CASCADE,
+    UNIQUE (case_id, identifier_type, identifier_norm)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rel_identifier_candidate_case ON rel_identifier_candidate(case_id, review_status);
+
+CREATE TABLE IF NOT EXISTS meta_ocr_job (
+    job_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'ocr_running',
+    bank_name TEXT NOT NULL DEFAULT '',
+    batch_name TEXT NOT NULL DEFAULT '',
+    layout_profile_id TEXT NOT NULL DEFAULT 'ceb_txn_v1',
+    page_count INTEGER NOT NULL DEFAULT 0,
+    header_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS meta_ocr_page (
+    page_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    page_index INTEGER NOT NULL,
+    image_path TEXT NOT NULL,
+    ocr_status TEXT NOT NULL DEFAULT 'ready',
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (job_id) REFERENCES meta_ocr_job(job_id) ON DELETE CASCADE,
+    UNIQUE (job_id, page_index)
+);
+
+CREATE TABLE IF NOT EXISTS meta_ocr_draft_row (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    page_index INTEGER NOT NULL DEFAULT 0,
+    row_index INTEGER NOT NULL DEFAULT 0,
+    cells_json TEXT NOT NULL DEFAULT '{}',
+    confidence_json TEXT NOT NULL DEFAULT '{}',
+    is_edited INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (job_id) REFERENCES meta_ocr_job(job_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_meta_ocr_job_status ON meta_ocr_job(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_meta_ocr_draft_row_job ON meta_ocr_draft_row(job_id, page_index, row_index);
+
 INSERT OR IGNORE INTO meta_schema_version (version, description)
 VALUES (1, 'Initial local SQLite schema with import, analysis and task tables');
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (2, 'Case, person linking and fusion cockpit tables');
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (3, 'Bank OCR draft jobs for image/PDF statement import');
 
 INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version) VALUES
 ('R001', '围标疑似', 1, 1.0, '{"min_shared_inquiries":3,"min_companies_together":3,"note":"同一批项目中多家企业高频共同参标"}', 1),

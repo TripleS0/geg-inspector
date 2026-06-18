@@ -3,6 +3,13 @@ export interface BatchInfo {
   source_type: string;
   file_count: number;
   imported_at: string;
+  batch_name?: string;
+}
+
+export function batchLabel(batch: Pick<BatchInfo, "import_batch_id" | "batch_name">): string {
+  const name = batch.batch_name?.trim();
+  if (name) return name;
+  return `${batch.import_batch_id.slice(0, 8)}…`;
 }
 
 export interface TablePreview {
@@ -81,6 +88,123 @@ export interface CommercialAnalysisResponse {
   description: string;
 }
 
+export interface WechatAnalysisFilter {
+  user_name?: string;
+  debit_credit_type?: string;
+  counterparty_name?: string;
+  business_type?: string;
+  purpose_type?: string;
+  amount_min?: number | null;
+  amount_max?: number | null;
+  start_time?: string;
+  end_time?: string;
+  day_time_start?: string;
+  day_time_end?: string;
+  remark?: string;
+  income_types?: string[];
+  expense_types?: string[];
+}
+
+export interface WechatAnalysisRecord {
+  source: string;
+  user_id: string;
+  txn_no: string;
+  user_name: string;
+  debit_credit_type: string;
+  business_type: string;
+  purpose_type: string;
+  txn_time: string;
+  amount_yuan: number;
+  balance_yuan: number;
+  counterparty_name: string;
+  counterparty_bank_name: string;
+  remark1: string;
+  remark2: string;
+}
+
+export interface WechatAnalysisResponse {
+  records: WechatAnalysisRecord[];
+  summary: {
+    record_count: number;
+    in_total: number;
+    out_total: number;
+    net_total: number;
+    type_counts: Record<string, number>;
+    top_counterparties: Array<[string, number]>;
+    top_purpose_types: Array<[string, number]>;
+    top_business_types: Array<[string, number]>;
+    income_types: string[];
+    expense_types: string[];
+  };
+  description: string;
+}
+
+export interface TelecomAnalysisFilter {
+  local_phone?: string;
+  peer_phone?: string;
+  call_type?: string;
+  bill_type?: string;
+  direction?: string;
+  local_carrier?: string;
+  peer_carrier?: string;
+  peer_location?: string;
+  local_location?: string;
+  duration_min?: number | null;
+  duration_max?: number | null;
+  start_time?: string;
+  end_time?: string;
+  day_time_start?: string;
+  day_time_end?: string;
+}
+
+export interface TelecomPeerRanking {
+  local_phone: string;
+  peer_phone: string;
+  call_count: number;
+  total_duration_sec: number;
+  outbound_count: number;
+  inbound_count: number;
+  first_call_time: string;
+  last_call_time: string;
+}
+
+export interface TelecomAnalysisRecord {
+  source: string;
+  record_id: string;
+  call_type: string;
+  bill_type: string;
+  direction: string;
+  local_phone_display: string;
+  peer_phone_display: string;
+  local_carrier: string;
+  peer_carrier: string;
+  local_location: string;
+  peer_location: string;
+  call_time: string;
+  duration_sec: number;
+  group_name: string;
+  group_no: string;
+}
+
+export interface TelecomAnalysisResponse {
+  records: TelecomAnalysisRecord[];
+  summary: {
+    record_count: number;
+    total_duration_sec: number;
+    total_duration_min: number;
+    direction_counts: Record<string, number>;
+    call_type_counts: Record<string, number>;
+    peer_location_counts: Record<string, number>;
+    peer_carrier_counts: Record<string, number>;
+    hourly_distribution: Array<{ hour: number; count: number }>;
+    daily_distribution: Array<{ date: string; count: number }>;
+    peer_ranking: TelecomPeerRanking[];
+    top_peer_locations: Array<[string, number]>;
+    top_peer_carriers: Array<[string, number]>;
+  };
+  description: string;
+}
+
 export interface RiskEvent {
   event_id: number;
   rule_code: string;
@@ -113,6 +237,46 @@ export interface TaskStatus {
   error_message: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface BankOcrRow {
+  row_id?: number;
+  page_index: number;
+  row_index: number;
+  cells: Record<string, string>;
+  confidence: Record<string, number>;
+  is_edited?: boolean;
+}
+
+export interface BankOcrJob {
+  job_id: string;
+  status: string;
+  bank_name: string;
+  batch_name: string;
+  layout_profile_id: string;
+  table_columns: string[];
+  header_fields: string[];
+  page_count: number;
+  header: Record<string, string>;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+  commit_mode?: "raw";
+  pages: Array<{
+    page_id: number;
+    page_index: number;
+    ocr_status: string;
+    width: number;
+    height: number;
+  }>;
+  rows: BankOcrRow[];
+}
+
+export interface BankOcrProfile {
+  profile_id: string;
+  bank_display_name: string;
+  table_columns: string[];
+  header_fields: string[];
 }
 
 export interface HealthInfo {
@@ -210,7 +374,162 @@ export interface BankTemplateAnalyzeResult {
   sample_row_count: number;
   preview_columns: string[];
   preview_grid: string[][];
+  input_kind?: "excel" | "ocr";
+  ocr_page_meta?: Record<string, string>;
 }
+
+export interface CaseInfo {
+  case_id: number;
+  case_name: string;
+  description: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  batch_count: number;
+  batches?: CaseBatchInfo[];
+}
+
+export interface CaseBatchInfo {
+  import_batch_id: string;
+  source_type: string;
+  bound_at: string;
+}
+
+export interface PersonLink {
+  link_id: number;
+  identifier_type: string;
+  identifier_value: string;
+  identifier_norm: string;
+  source_type: string;
+  source_ref: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PersonInfo {
+  person_id: number;
+  case_id: number;
+  display_name: string;
+  role_tag: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  links: PersonLink[];
+}
+
+export interface IdentifierCandidate {
+  candidate_id: number;
+  identifier_type: string;
+  identifier_norm: string;
+  display_value: string;
+  source_type: string;
+  source_batch_id: string;
+  source_ref: Record<string, unknown>;
+  review_status: string;
+  created_at: string;
+}
+
+export interface FusionRecord {
+  record_type: string;
+  title: string;
+  time: string | null;
+  amount: number | null;
+  counterparty: string;
+  summary: string;
+  source_ref: Record<string, unknown>;
+  direction?: string;
+  batch_id?: string;
+  role_hint?: string;
+}
+
+export interface PersonCockpitResponse {
+  profile: Record<string, unknown>;
+  kpis: Record<string, number>;
+  charts: Record<string, unknown>;
+  records_by_type: Record<string, FusionRecord[]>;
+  summary_text: string;
+}
+
+export interface RelationCockpitResponse {
+  person_a: { person_id: number; display_name: string };
+  person_b: { person_id: number; display_name: string };
+  direct_records: FusionRecord[];
+  indirect_relations: Array<{ relation_type: string; title: string; detail: string }>;
+  charts: Record<string, unknown>;
+  summary_text: string;
+}
+
+export interface AnchorCockpitResponse {
+  anchor: { type: string; value: string; norm: string; label: string };
+  linked_persons: Array<{ person_id: number; display_name: string; role_tag: string }>;
+  enterprise_roles?: {
+    enterprise_name: string;
+    legal_person: string;
+    shareholders: string[];
+    key_persons: string[];
+  } | null;
+  commercial_roles?: {
+    purchaser_count: number;
+    winner_count: number;
+    bid_company_count: number;
+  } | null;
+  kpis: Record<string, number>;
+  charts: Record<string, unknown>;
+  records_by_type: Record<string, FusionRecord[]>;
+  summary_text: string;
+}
+
+export interface AnchorSuggestItem {
+  identifier_type: string;
+  display_value: string;
+  identifier_norm: string;
+  person_id?: number | null;
+  person_name?: string;
+  source: string;
+}
+
+export interface RecordDetailResponse {
+  layer: string;
+  table: string;
+  pk: Record<string, unknown>;
+  fields: Record<string, unknown>;
+  raw_payload: unknown;
+}
+
+export const CASE_STORAGE_KEY = "datafusionx.selectedCaseId";
+export const CASE_CHANGED_EVENT = "datafusionx.caseChanged";
+
+export function resolveSelectedCaseId(
+  cases: Array<{ case_id: number }>,
+  preferredId?: number | null
+): number | null {
+  const storedRaw = localStorage.getItem(CASE_STORAGE_KEY);
+  const storedId = storedRaw ? Number(storedRaw) : null;
+  const candidate = preferredId ?? storedId;
+  if (candidate && cases.some((item) => item.case_id === candidate)) return candidate;
+  return cases[0]?.case_id ?? null;
+}
+
+export function persistSelectedCaseId(caseId: number | null) {
+  if (caseId != null) {
+    localStorage.setItem(CASE_STORAGE_KEY, String(caseId));
+  } else {
+    localStorage.removeItem(CASE_STORAGE_KEY);
+  }
+}
+
+export function emitCaseChanged(caseId: number | null) {
+  window.dispatchEvent(new CustomEvent(CASE_CHANGED_EVENT, { detail: { caseId } }));
+}
+
+export const IDENTIFIER_TYPE_LABELS: Record<string, string> = {
+  person_name: "姓名",
+  phone: "手机号",
+  wechat_name: "微信名",
+  bank_card: "银行卡号",
+  bank_acct: "银行账号",
+  id_no: "身份证号",
+  enterprise_name: "企业名称",
+};
 
 const API_BASE = (() => {
   const fromGlobal = (window as unknown as { DATAFUSIONX_API_BASE?: string }).DATAFUSIONX_API_BASE;
@@ -259,19 +578,38 @@ export const api = {
       { method: "DELETE" }
     ),
 
-  importByPaths: (sourceType: "bank" | "commercial" | "enterprise", filePaths: string[], bankName: string) =>
+  renameBatch: (batchId: string, batchName: string) =>
+    http<BatchInfo>(`/api/batches/${encodeURIComponent(batchId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ batch_name: batchName }),
+    }),
+
+  importByPaths: (
+    sourceType: "bank" | "commercial" | "enterprise" | "wechat" | "telecom",
+    filePaths: string[],
+    bankName: string,
+    batchName?: string
+  ) =>
     http<{ task_id: string }>(`/api/import/${sourceType}`, {
       method: "POST",
-      body: JSON.stringify({ file_paths: filePaths, bank_name: bankName }),
+      body: JSON.stringify({
+        file_paths: filePaths,
+        bank_name: bankName,
+        batch_name: batchName?.trim() || undefined,
+      }),
     }),
 
   uploadFiles: async (
-    sourceType: "bank" | "commercial" | "enterprise",
+    sourceType: "bank" | "commercial" | "enterprise" | "wechat" | "telecom",
     files: File[],
-    bankName: string
+    bankName: string,
+    batchName?: string
   ) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
+    if (batchName?.trim()) {
+      form.append("batch_name", batchName.trim());
+    }
     const url = `${API_BASE}/api/upload/${sourceType}?bank_name=${encodeURIComponent(bankName)}`;
     const res = await fetch(url, { method: "POST", body: form });
     if (!res.ok) {
@@ -280,6 +618,60 @@ export const api = {
     }
     return (await res.json()) as { task_id: string };
   },
+
+  uploadBankOcr: async (
+    files: File[],
+    bankName: string,
+    batchName?: string,
+    layoutProfileId = "ceb_txn_v1"
+  ) => {
+    const form = new FormData();
+    files.forEach((file) => form.append("files", file));
+    if (batchName?.trim()) {
+      form.append("batch_name", batchName.trim());
+    }
+    form.append("layout_profile_id", layoutProfileId);
+    form.append("bank_name", bankName);
+    const res = await fetch(`${API_BASE}/api/bank-ocr/upload`, { method: "POST", body: form });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${res.status} ${text}`);
+    }
+    return (await res.json()) as { task_id: string };
+  },
+
+  listBankOcrJobs: (status?: string) =>
+    http<{ items: BankOcrJob[] }>(`/api/bank-ocr/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+
+  getBankOcrJob: (jobId: string) => http<BankOcrJob>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}`),
+
+  bankOcrPageImageUrl: (jobId: string, pageIndex: number) =>
+    `${API_BASE}/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/pages/${pageIndex}/image`,
+
+  saveBankOcrRows: (jobId: string, rows: BankOcrRow[]) =>
+    http<BankOcrJob>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/rows`, {
+      method: "PUT",
+      body: JSON.stringify({ rows }),
+    }),
+
+  saveBankOcrHeader: (jobId: string, header: Record<string, string>) =>
+    http<BankOcrJob>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/header`, {
+      method: "PUT",
+      body: JSON.stringify({ header }),
+    }),
+
+  commitBankOcrJob: (jobId: string) =>
+    http<{ task_id: string }>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/commit`, { method: "POST" }),
+
+  deleteBankOcrJob: (jobId: string) =>
+    http<{ job_id: string; deleted: boolean }>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}`, {
+      method: "DELETE",
+    }),
+
+  listBankOcrProfiles: () =>
+    http<{ items: BankOcrProfile[]; supported_formats?: string[]; format_hint?: string }>(
+      "/api/bank-ocr/profiles"
+    ),
 
   desensitizeByPaths: (filePaths: string[]) =>
     http<{ task_id: string }>("/api/desensitize", {
@@ -340,6 +732,24 @@ export const api = {
       body: JSON.stringify(filters),
     }),
 
+  wechatAnalysisFilterOptions: (batchId: string) =>
+    http<Record<string, string[]>>(`/api/wechat/${encodeURIComponent(batchId)}/analysis/filter-options`),
+
+  wechatAnalysisRecords: (batchId: string, filters: WechatAnalysisFilter) =>
+    http<WechatAnalysisResponse>(`/api/wechat/${encodeURIComponent(batchId)}/analysis/records`, {
+      method: "POST",
+      body: JSON.stringify(filters),
+    }),
+
+  telecomAnalysisFilterOptions: (batchId: string) =>
+    http<Record<string, string[]>>(`/api/telecom/${encodeURIComponent(batchId)}/analysis/filter-options`),
+
+  telecomAnalysisRecords: (batchId: string, filters: TelecomAnalysisFilter) =>
+    http<TelecomAnalysisResponse>(`/api/telecom/${encodeURIComponent(batchId)}/analysis/records`, {
+      method: "POST",
+      body: JSON.stringify(filters),
+    }),
+
   runRisk: (batchId: string, enterpriseBatchId?: string) =>
     http<{ task_id: string }>(`/api/commercial/${encodeURIComponent(batchId)}/risk/run`, {
       method: "POST",
@@ -356,7 +766,7 @@ export const api = {
       `/api/commercial/${encodeURIComponent(batchId)}/risk/summary?limit=${limit}`
     ),
 
-  exportBatch: (sourceType: "bank" | "commercial", batchId: string, outputPath?: string) =>
+  exportBatch: (sourceType: "bank" | "commercial" | "wechat" | "telecom", batchId: string, outputPath?: string) =>
     http<{ task_id: string }>(`/api/export/${sourceType}/${encodeURIComponent(batchId)}`, {
       method: "POST",
       body: JSON.stringify({ output_path: outputPath || null }),
@@ -423,6 +833,136 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ template_fingerprint: templateFingerprint }),
     }),
+
+  listCases: () => http<{ items: CaseInfo[] }>("/api/cases"),
+
+  createCase: (body: { case_name: string; description?: string; status?: string }) =>
+    http<CaseInfo>("/api/cases", { method: "POST", body: JSON.stringify(body) }),
+
+  getCase: (caseId: number) => http<CaseInfo>(`/api/cases/${caseId}`),
+
+  updateCase: (caseId: number, body: { case_name?: string; description?: string; status?: string }) =>
+    http<CaseInfo>(`/api/cases/${caseId}`, { method: "PATCH", body: JSON.stringify(body) }),
+
+  deleteCase: (caseId: number) =>
+    http<{ status: string; case_id: string }>(`/api/cases/${caseId}`, { method: "DELETE" }),
+
+  listUnboundBatches: () => http<{ items: BatchInfo[] }>("/api/cases/unbound-batches"),
+
+  batchCaseMap: () => http<{ items: Record<string, { case_id: number; case_name: string }> }>("/api/cases/batch-map"),
+
+  bindCaseBatches: (caseId: number, importBatchIds: string[]) =>
+    http<{ items: CaseBatchInfo[] }>(`/api/cases/${caseId}/batches`, {
+      method: "POST",
+      body: JSON.stringify({ import_batch_ids: importBatchIds }),
+    }),
+
+  unbindCaseBatch: (caseId: number, batchId: string) =>
+    http<{ status: string; import_batch_id: string }>(
+      `/api/cases/${caseId}/batches/${encodeURIComponent(batchId)}`,
+      { method: "DELETE" }
+    ),
+
+  discoverCaseIdentifiers: (caseId: number) =>
+    http<{ case_id: number; inserted: number; skipped: number }>(`/api/cases/${caseId}/discover`, {
+      method: "POST",
+    }),
+
+  autoLinkCase: (caseId: number, rediscover = true) =>
+    http<{
+      case_id: number;
+      persons_created: number;
+      links_created: number;
+      skipped: number;
+      unresolved_pending: number;
+      person_names: string[];
+    }>(`/api/cases/${caseId}/auto-link?rediscover=${rediscover ? "true" : "false"}`, {
+      method: "POST",
+    }),
+
+  listCasePersons: (caseId: number) => http<{ items: PersonInfo[] }>(`/api/cases/${caseId}/persons`),
+
+  createCasePerson: (caseId: number, body: { display_name: string; role_tag?: string; notes?: string }) =>
+    http<PersonInfo>(`/api/cases/${caseId}/persons`, { method: "POST", body: JSON.stringify(body) }),
+
+  updateCasePerson: (
+    caseId: number,
+    personId: number,
+    body: { display_name?: string; role_tag?: string; notes?: string }
+  ) =>
+    http<PersonInfo>(`/api/cases/${caseId}/persons/${personId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteCasePerson: (caseId: number, personId: number) =>
+    http<{ status: string; person_id: string }>(`/api/cases/${caseId}/persons/${personId}`, {
+      method: "DELETE",
+    }),
+
+  listCaseCandidates: (caseId: number, reviewStatus = "pending") =>
+    http<{ items: IdentifierCandidate[] }>(
+      `/api/cases/${caseId}/candidates?review_status=${encodeURIComponent(reviewStatus)}`
+    ),
+
+  linkCaseCandidate: (
+    caseId: number,
+    candidateId: number,
+    body: { person_id?: number; display_name?: string; role_tag?: string }
+  ) =>
+    http<PersonInfo>(`/api/cases/${caseId}/candidates/${candidateId}/link`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  markCaseCandidateNoMatch: (caseId: number, candidateId: number) =>
+    http<{ status: string; candidate_id: string }>(
+      `/api/cases/${caseId}/candidates/${candidateId}/no-match`,
+      { method: "POST" }
+    ),
+
+  addPersonManualLink: (
+    caseId: number,
+    personId: number,
+    body: { identifier_type: string; identifier_value: string }
+  ) =>
+    http<PersonInfo>(`/api/cases/${caseId}/persons/${personId}/links`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  removePersonLink: (caseId: number, personId: number, linkId: number) =>
+    http<{ status: string; link_id: string }>(
+      `/api/cases/${caseId}/persons/${personId}/links/${linkId}`,
+      { method: "DELETE" }
+    ),
+
+  personCockpit: (caseId: number, personId: number) =>
+    http<PersonCockpitResponse>(`/api/cases/${caseId}/cockpit/person/${personId}`),
+
+  relationCockpit: (caseId: number, personA: number, personB: number) =>
+    http<RelationCockpitResponse>(
+      `/api/cases/${caseId}/cockpit/relation?person_a=${personA}&person_b=${personB}`
+    ),
+
+  anchorCockpit: (caseId: number, value: string, type = "auto") =>
+    http<AnchorCockpitResponse>(
+      `/api/cases/${caseId}/cockpit/anchor?${new URLSearchParams({ value, type }).toString()}`
+    ),
+
+  suggestAnchors: (caseId: number, q: string, limit = 20, type = "auto") =>
+    http<{ items: AnchorSuggestItem[] }>(
+      `/api/cases/${caseId}/cockpit/suggest?${new URLSearchParams({
+        q,
+        type,
+        limit: String(limit),
+      }).toString()}`
+    ),
+
+  recordDetail: (caseId: number, sourceRef: Record<string, unknown>) =>
+    http<RecordDetailResponse>(
+      `/api/cases/${caseId}/records/detail?ref=${encodeURIComponent(JSON.stringify(sourceRef))}`
+    ),
 };
 
 export async function analyzeBankTemplateSample(params: {
@@ -441,6 +981,36 @@ export async function analyzeBankTemplateSample(params: {
     form.append("header_row_0based", String(params.headerRow0based));
   }
   const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = (await res.json()) as { detail?: string };
+      detail = data?.detail || JSON.stringify(data);
+    } catch {
+      // ignore
+    }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return (await res.json()) as BankTemplateAnalyzeResult;
+}
+
+export async function analyzeBankTemplateOcrSample(params: {
+  file: File;
+  templateType: BankTemplateType;
+  bankNameHint?: string;
+  layoutProfileId?: string;
+}): Promise<BankTemplateAnalyzeResult> {
+  const form = new FormData();
+  form.append("file", params.file);
+  form.append("template_type", params.templateType);
+  form.append("bank_name_hint", params.bankNameHint || "银行数据");
+  if (params.layoutProfileId) {
+    form.append("layout_profile_id", params.layoutProfileId);
+  }
+  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-ocr-sample`, {
     method: "POST",
     body: form,
   });

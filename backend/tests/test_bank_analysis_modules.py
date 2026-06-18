@@ -87,6 +87,11 @@ class BankAnalysisModulesTests(unittest.TestCase):
     def test_classify_special_time_empty_when_unparseable(self) -> None:
         self.assertEqual(classify_special_time(_row(txn_time="not-a-date")), [])
 
+    def test_classify_special_time_survives_zhdate_edge_dates(self) -> None:
+        """zhdate may reject some solar dates near lunar new year; must not crash."""
+        tags = classify_special_time(_row(txn_time="2025-01-28 21:07:25"))
+        self.assertIsInstance(tags, list)
+
     def test_classify_special_time_solar_festivals(self) -> None:
         new_year = classify_special_time(_row(txn_time="2026-01-01 12:00:00"))
         self.assertTrue(any("元旦" in t or "法定" in t for t in new_year), new_year)

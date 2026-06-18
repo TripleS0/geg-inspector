@@ -15,14 +15,23 @@ if str(BACKEND_DIR) not in sys.path:
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from app.application.analysis_use_cases import BankAnalysisUseCase, CommercialAnalysisUseCase, CommercialRiskUseCase
+from app.application.analysis_use_cases import (
+    BankAnalysisUseCase,
+    CommercialAnalysisUseCase,
+    CommercialRiskUseCase,
+    TelecomAnalysisUseCase,
+    WechatAnalysisUseCase,
+)
+from app.application.case_use_cases import CaseUseCase
+from app.application.fusion_use_cases import FusionUseCase
 from app.application.risk_config_use_cases import RiskConfigUseCase
 from app.application.bootstrap import bootstrap_database
 from app.application.dataset_use_cases import DatasetUseCase
 from app.application.export_use_cases import ExportUseCase
+from app.application.bank_ocr_use_cases import BankOcrUseCase
 from app.application.import_use_cases import EnterpriseImportUseCase, ImportUseCase
 from app.application.task_store import TaskStore
 from app.runtime_paths import exports_dir, uploads_dir
@@ -31,9 +40,13 @@ from app.services.integration.bank.bank_template_wizard_service import (
     BankTemplateWizardService,
     validate_field_map,
 )
+from app.services.bank_ocr.bank_template_ocr_service import BankTemplateOcrAnalyzeService
+from app.services.bank_ocr.upload_formats import SUPPORTED_UPLOAD_SUFFIXES, UPLOAD_FORMAT_HINT
 from app.services.integration.bank.mapping_service import BankMappingService
 from app.services.integration.bank.query_service import BankQueryFilters
 from app.services.integration.commercial.analysis_service import CommercialAnalysisFilters
+from app.services.integration.telecom.analysis_service import TelecomAnalysisFilters
+from app.services.integration.wechat.analysis_service import WechatAnalysisFilters
 from app.services.integration.bank.user_bank_template_repository import UserBankTemplateRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 from app.services.desensitizer_service import collect_supported_files, process_single_file
@@ -56,6 +69,13 @@ class ImportRequest(BaseModel):
 
     file_paths: List[str] = Field(default_factory=list)
     bank_name: str = "默认来源"
+    batch_name: Optional[str] = None
+
+
+class BatchRenamePayload(BaseModel):
+    """Rename an import batch display name."""
+
+    batch_name: str = Field(..., min_length=1, max_length=120)
 
 
 class RiskRunRequest(BaseModel):
@@ -74,6 +94,18 @@ class DesensitizeRequest(BaseModel):
     """Desensitization request using local file or folder paths."""
 
     file_paths: List[str] = Field(default_factory=list)
+
+
+class BankOcrRowsPayload(BaseModel):
+    """Proofread OCR rows payload."""
+
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class BankOcrHeaderPayload(BaseModel):
+    """Proofread OCR header payload."""
+
+    header: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BankFilterRequest(BaseModel):
@@ -118,6 +150,90 @@ class CommercialAnalysisFilterRequest(BaseModel):
         return CommercialAnalysisFilters(**data)
 
 
+class WechatAnalysisFilterRequest(BaseModel):
+    """WeChat transfer analysis filter payload."""
+
+    user_name: str = ""
+    debit_credit_type: str = ""
+    counterparty_name: str = ""
+    business_type: str = ""
+    purpose_type: str = ""
+    amount_min: Optional[float] = None
+    amount_max: Optional[float] = None
+    start_time: str = ""
+    end_time: str = ""
+    day_time_start: str = ""
+    day_time_end: str = ""
+    remark: str = ""
+    income_types: List[str] = Field(default_factory=lambda: ["入"])
+    expense_types: List[str] = Field(default_factory=lambda: ["出"])
+
+    def to_filters(self) -> WechatAnalysisFilters:
+        if hasattr(self, "model_dump"):
+            data = self.model_dump()
+        else:  # pragma: no cover - pydantic v1 fallback
+            data = self.dict()
+        return WechatAnalysisFilters(
+            user_name=data.get("user_name", ""),
+            debit_credit_type=data.get("debit_credit_type", ""),
+            counterparty_name=data.get("counterparty_name", ""),
+            business_type=data.get("business_type", ""),
+            purpose_type=data.get("purpose_type", ""),
+            amount_min=data.get("amount_min"),
+            amount_max=data.get("amount_max"),
+            start_time=data.get("start_time", ""),
+            end_time=data.get("end_time", ""),
+            day_time_start=data.get("day_time_start", ""),
+            day_time_end=data.get("day_time_end", ""),
+            remark=data.get("remark", ""),
+            income_types=tuple(data.get("income_types") or ["入"]),
+            expense_types=tuple(data.get("expense_types") or ["出"]),
+        )
+
+
+class TelecomAnalysisFilterRequest(BaseModel):
+    """Telecom CDR analysis filter payload."""
+
+    local_phone: str = ""
+    peer_phone: str = ""
+    call_type: str = ""
+    bill_type: str = ""
+    direction: str = ""
+    local_carrier: str = ""
+    peer_carrier: str = ""
+    peer_location: str = ""
+    local_location: str = ""
+    duration_min: Optional[int] = None
+    duration_max: Optional[int] = None
+    start_time: str = ""
+    end_time: str = ""
+    day_time_start: str = ""
+    day_time_end: str = ""
+
+    def to_filters(self) -> TelecomAnalysisFilters:
+        if hasattr(self, "model_dump"):
+            data = self.model_dump()
+        else:  # pragma: no cover - pydantic v1 fallback
+            data = self.dict()
+        return TelecomAnalysisFilters(
+            local_phone=data.get("local_phone", ""),
+            peer_phone=data.get("peer_phone", ""),
+            call_type=data.get("call_type", ""),
+            bill_type=data.get("bill_type", ""),
+            direction=data.get("direction", ""),
+            local_carrier=data.get("local_carrier", ""),
+            peer_carrier=data.get("peer_carrier", ""),
+            peer_location=data.get("peer_location", ""),
+            local_location=data.get("local_location", ""),
+            duration_min=data.get("duration_min"),
+            duration_max=data.get("duration_max"),
+            start_time=data.get("start_time", ""),
+            end_time=data.get("end_time", ""),
+            day_time_start=data.get("day_time_start", ""),
+            day_time_end=data.get("day_time_end", ""),
+        )
+
+
 class ModuleRequest(BaseModel):
     """Bank fixed-module request."""
 
@@ -141,6 +257,45 @@ class DeleteRowsRequest(BaseModel):
     """Delete table rows by SQLite rowid."""
 
     rowids: List[int]
+
+
+class CasePayload(BaseModel):
+    case_name: str
+    description: str = ""
+    status: str = "active"
+
+
+class CasePatchPayload(BaseModel):
+    case_name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CaseBindBatchesPayload(BaseModel):
+    import_batch_ids: List[str] = Field(default_factory=list)
+
+
+class PersonPayload(BaseModel):
+    display_name: str
+    role_tag: str = "unknown"
+    notes: str = ""
+
+
+class PersonPatchPayload(BaseModel):
+    display_name: Optional[str] = None
+    role_tag: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PersonLinkCandidatePayload(BaseModel):
+    person_id: Optional[int] = None
+    display_name: Optional[str] = None
+    role_tag: str = "unknown"
+
+
+class ManualLinkPayload(BaseModel):
+    identifier_type: str
+    identifier_value: str
 
 
 class QichachaExportRowsBody(BaseModel):
@@ -381,8 +536,6 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://127.0.0.1",
             "http://localhost",
-            "tauri://localhost",
-            "https://tauri.localhost",
         ],
         allow_origin_regex=r"https?://(127\.0\.0\.1|localhost)(:\d+)?",
         allow_credentials=True,
@@ -471,7 +624,10 @@ def create_app() -> FastAPI:
         return enqueue(
             background_tasks,
             "import_enterprise",
-            lambda: EnterpriseImportUseCase().import_enterprise_profiles(files).to_dict(),
+            lambda: EnterpriseImportUseCase().import_enterprise_profiles(
+                files,
+                batch_name=payload.batch_name,
+            ).to_dict(),
         )
 
     @app.post("/api/import/{source_type}")
@@ -480,8 +636,8 @@ def create_app() -> FastAPI:
         payload: ImportRequest,
         background_tasks: BackgroundTasks,
     ) -> Dict[str, str]:
-        if source_type not in {"bank", "commercial"}:
-            raise HTTPException(status_code=400, detail="source_type 仅支持 bank 或 commercial")
+        if source_type not in {"bank", "commercial", "wechat", "telecom"}:
+            raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、wechat 或 telecom")
         files = require_files(payload.file_paths)
         return enqueue(
             background_tasks,
@@ -490,6 +646,7 @@ def create_app() -> FastAPI:
                 file_paths=files,
                 bank_name=payload.bank_name,
                 source_type=source_type,
+                batch_name=payload.batch_name,
             ).to_dict(),
         )
 
@@ -499,9 +656,10 @@ def create_app() -> FastAPI:
         background_tasks: BackgroundTasks,
         files: List[UploadFile] = File(...),
         bank_name: str = "默认来源",
+        batch_name: Optional[str] = Form(default=None),
     ) -> Dict[str, str]:
-        if source_type not in {"bank", "commercial", "enterprise"}:
-            raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial 或 enterprise")
+        if source_type not in {"bank", "commercial", "enterprise", "wechat", "telecom"}:
+            raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、enterprise、wechat 或 telecom")
         task_upload_dir = uploads_dir() / source_type
         task_upload_dir.mkdir(parents=True, exist_ok=True)
         saved: List[str] = []
@@ -514,7 +672,10 @@ def create_app() -> FastAPI:
             return enqueue(
                 background_tasks,
                 "import_enterprise",
-                lambda: EnterpriseImportUseCase().import_enterprise_profiles(saved).to_dict(),
+                lambda: EnterpriseImportUseCase().import_enterprise_profiles(
+                    saved,
+                    batch_name=batch_name,
+                ).to_dict(),
             )
         return enqueue(
             background_tasks,
@@ -523,7 +684,103 @@ def create_app() -> FastAPI:
                 file_paths=saved,
                 bank_name=bank_name,
                 source_type=source_type,
+                batch_name=batch_name,
             ).to_dict(),
+        )
+
+    @app.get("/api/bank-ocr/profiles")
+    def list_bank_ocr_profiles() -> Dict[str, Any]:
+        payload = BankOcrUseCase().list_profiles()
+        payload["supported_formats"] = sorted(SUPPORTED_UPLOAD_SUFFIXES)
+        payload["format_hint"] = UPLOAD_FORMAT_HINT
+        return payload
+
+    @app.get("/api/bank-ocr/jobs")
+    def list_bank_ocr_jobs(status: Optional[str] = Query(default=None)) -> Dict[str, Any]:
+        return BankOcrUseCase().list_jobs(status=status)
+
+    @app.get("/api/bank-ocr/jobs/{job_id}")
+    def get_bank_ocr_job(job_id: str) -> Dict[str, Any]:
+        try:
+            return BankOcrUseCase().get_job(job_id)
+        except ValueError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+
+    @app.get("/api/bank-ocr/jobs/{job_id}/pages/{page_index}/image")
+    def get_bank_ocr_page_image(job_id: str, page_index: int) -> FileResponse:
+        from app.services.bank_ocr.draft_repository import BankOcrDraftRepository
+
+        image_path = BankOcrDraftRepository(SqliteClient()).get_page_image_path(job_id, page_index)
+        if not image_path or not Path(image_path).is_file():
+            raise HTTPException(status_code=404, detail="页面图片不存在")
+        media_type = "image/png"
+        suffix = Path(image_path).suffix.lower()
+        if suffix in {".jpg", ".jpeg"}:
+            media_type = "image/jpeg"
+        elif suffix == ".webp":
+            media_type = "image/webp"
+        return FileResponse(image_path, media_type=media_type)
+
+    @app.put("/api/bank-ocr/jobs/{job_id}/rows")
+    def save_bank_ocr_rows(job_id: str, payload: BankOcrRowsPayload) -> Dict[str, Any]:
+        try:
+            return BankOcrUseCase().save_rows(job_id, payload.rows)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.put("/api/bank-ocr/jobs/{job_id}/header")
+    def save_bank_ocr_header(job_id: str, payload: BankOcrHeaderPayload) -> Dict[str, Any]:
+        try:
+            return BankOcrUseCase().save_header(job_id, payload.header)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.post("/api/bank-ocr/jobs/{job_id}/commit")
+    def commit_bank_ocr_job(job_id: str, background_tasks: BackgroundTasks) -> Dict[str, str]:
+        return enqueue(
+            background_tasks,
+            "bank_ocr_commit",
+            lambda: BankOcrUseCase().commit(job_id),
+        )
+
+    @app.delete("/api/bank-ocr/jobs/{job_id}")
+    def delete_bank_ocr_job(job_id: str) -> Dict[str, Any]:
+        try:
+            return BankOcrUseCase().delete_job(job_id)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.post("/api/bank-ocr/upload")
+    async def upload_bank_ocr(
+        background_tasks: BackgroundTasks,
+        files: List[UploadFile] = File(...),
+        bank_name: str = Form(default="光大银行"),
+        batch_name: Optional[str] = Form(default=None),
+        layout_profile_id: Optional[str] = Form(default="ceb_txn_v1"),
+    ) -> Dict[str, str]:
+        task_upload_dir = uploads_dir() / "bank_ocr" / "incoming"
+        task_upload_dir.mkdir(parents=True, exist_ok=True)
+        saved: List[str] = []
+        for item in files:
+            suffix = Path(item.filename or "upload.png").suffix.lower()
+            if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"不支持的文件类型：{suffix or '无后缀'}。{UPLOAD_FORMAT_HINT}",
+                )
+            target = task_upload_dir / f"{uuid.uuid4().hex}_{Path(item.filename or 'upload.png').name}"
+            with target.open("wb") as fp:
+                shutil.copyfileobj(item.file, fp)
+            saved.append(str(target))
+        return enqueue(
+            background_tasks,
+            "bank_ocr_upload",
+            lambda: BankOcrUseCase().process_upload(
+                upload_paths=saved,
+                bank_name=bank_name,
+                batch_name=batch_name or "",
+                layout_profile_id=layout_profile_id,
+            ),
         )
 
     @app.post("/api/desensitize")
@@ -565,7 +822,7 @@ def create_app() -> FastAPI:
         uc = DatasetUseCase()
         if source_type == "enterprise":
             rows = uc.list_enterprise_batches(limit)
-        elif source_type in ("bank", "commercial"):
+        elif source_type in ("bank", "commercial", "wechat", "telecom"):
             rows = uc.list_batches(source_type, limit)
         else:
             rows = uc.list_batches_merged(limit)
@@ -575,6 +832,301 @@ def create_app() -> FastAPI:
     def delete_batch(batch_id: str) -> Dict[str, Any]:
         try:
             return DatasetUseCase().delete_import_batch(batch_id)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.patch("/api/batches/{batch_id}")
+    def rename_batch(batch_id: str, payload: BatchRenamePayload) -> Dict[str, Any]:
+        try:
+            row = DatasetUseCase().rename_batch(batch_id, payload.batch_name)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return row.to_dict()
+
+    @app.get("/api/cases")
+    def list_cases() -> Dict[str, Any]:
+        rows = CaseUseCase().list_cases()
+        return {
+            "items": [
+                {
+                    "case_id": r.case_id,
+                    "case_name": r.case_name,
+                    "description": r.description,
+                    "status": r.status,
+                    "created_at": r.created_at,
+                    "updated_at": r.updated_at,
+                    "batch_count": r.batch_count,
+                }
+                for r in rows
+            ]
+        }
+
+    @app.post("/api/cases")
+    def create_case(payload: CasePayload) -> Dict[str, Any]:
+        try:
+            case = CaseUseCase().create_case(
+                case_name=payload.case_name,
+                description=payload.description,
+                status=payload.status,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return {
+            "case_id": case.case_id,
+            "case_name": case.case_name,
+            "description": case.description,
+            "status": case.status,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "batch_count": case.batch_count,
+        }
+
+    @app.get("/api/cases/unbound-batches")
+    def list_unbound_batches() -> Dict[str, Any]:
+        return {"items": CaseUseCase().list_unbound_batches()}
+
+    @app.get("/api/cases/batch-map")
+    def batch_case_map() -> Dict[str, Any]:
+        return {"items": CaseUseCase().batch_case_map()}
+
+    @app.get("/api/cases/{case_id}")
+    def get_case(case_id: int) -> Dict[str, Any]:
+        case = CaseUseCase().get_case(case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        batches = CaseUseCase().list_case_batches(case_id)
+        return {
+            "case_id": case.case_id,
+            "case_name": case.case_name,
+            "description": case.description,
+            "status": case.status,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "batch_count": case.batch_count,
+            "batches": [
+                {
+                    "import_batch_id": b.import_batch_id,
+                    "source_type": b.source_type,
+                    "bound_at": b.bound_at,
+                }
+                for b in batches
+            ],
+        }
+
+    @app.patch("/api/cases/{case_id}")
+    def patch_case(case_id: int, payload: CasePatchPayload) -> Dict[str, Any]:
+        try:
+            case = CaseUseCase().update_case(
+                case_id,
+                case_name=payload.case_name,
+                description=payload.description,
+                status=payload.status,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=404 if "不存在" in str(err) else 400, detail=str(err)) from err
+        return {
+            "case_id": case.case_id,
+            "case_name": case.case_name,
+            "description": case.description,
+            "status": case.status,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "batch_count": case.batch_count,
+        }
+
+    @app.delete("/api/cases/{case_id}")
+    def delete_case(case_id: int) -> Dict[str, str]:
+        CaseUseCase().delete_case(case_id)
+        return {"status": "deleted", "case_id": str(case_id)}
+
+    @app.post("/api/cases/{case_id}/batches")
+    def bind_case_batches(case_id: int, payload: CaseBindBatchesPayload) -> Dict[str, Any]:
+        try:
+            batches = CaseUseCase().bind_batches(case_id, payload.import_batch_ids)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return {
+            "items": [
+                {
+                    "import_batch_id": b.import_batch_id,
+                    "source_type": b.source_type,
+                    "bound_at": b.bound_at,
+                }
+                for b in batches
+            ]
+        }
+
+    @app.delete("/api/cases/{case_id}/batches/{batch_id}")
+    def unbind_case_batch(case_id: int, batch_id: str) -> Dict[str, str]:
+        CaseUseCase().unbind_batch(case_id, batch_id)
+        return {"status": "unbound", "import_batch_id": batch_id}
+
+    @app.post("/api/cases/{case_id}/discover")
+    def discover_case_identifiers(case_id: int) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        return FusionUseCase().discover(case_id)
+
+    @app.post("/api/cases/{case_id}/auto-link")
+    def auto_link_case_identifiers(
+        case_id: int,
+        rediscover: bool = Query(default=True),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            return FusionUseCase().auto_link(case_id, rediscover=rediscover)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/persons")
+    def list_case_persons(case_id: int) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        return {"items": FusionUseCase().list_persons(case_id)}
+
+    @app.post("/api/cases/{case_id}/persons")
+    def create_case_person(case_id: int, payload: PersonPayload) -> Dict[str, Any]:
+        try:
+            return FusionUseCase().create_person(
+                case_id,
+                display_name=payload.display_name,
+                role_tag=payload.role_tag,
+                notes=payload.notes,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/persons/{person_id}")
+    def get_case_person(case_id: int, person_id: int) -> Dict[str, Any]:
+        try:
+            return FusionUseCase().get_person(case_id, person_id)
+        except ValueError as err:
+            raise HTTPException(status_code=404, detail=str(err)) from err
+
+    @app.patch("/api/cases/{case_id}/persons/{person_id}")
+    def patch_case_person(case_id: int, person_id: int, payload: PersonPatchPayload) -> Dict[str, Any]:
+        try:
+            return FusionUseCase().update_person(
+                case_id,
+                person_id,
+                display_name=payload.display_name,
+                role_tag=payload.role_tag,
+                notes=payload.notes,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=404 if "不存在" in str(err) else 400, detail=str(err)) from err
+
+    @app.delete("/api/cases/{case_id}/persons/{person_id}")
+    def delete_case_person(case_id: int, person_id: int) -> Dict[str, str]:
+        FusionUseCase().delete_person(case_id, person_id)
+        return {"status": "deleted", "person_id": str(person_id)}
+
+    @app.get("/api/cases/{case_id}/candidates")
+    def list_case_candidates(
+        case_id: int,
+        review_status: str = Query(default="pending"),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        return {"items": FusionUseCase().list_candidates(case_id, review_status=review_status)}
+
+    @app.post("/api/cases/{case_id}/candidates/{candidate_id}/link")
+    def link_case_candidate(
+        case_id: int,
+        candidate_id: int,
+        payload: PersonLinkCandidatePayload,
+    ) -> Dict[str, Any]:
+        try:
+            if payload.person_id is not None:
+                return FusionUseCase().link_candidate(case_id, candidate_id, payload.person_id)
+            return FusionUseCase().link_candidate_new_person(
+                case_id,
+                candidate_id,
+                display_name=payload.display_name,
+                role_tag=payload.role_tag,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.post("/api/cases/{case_id}/candidates/{candidate_id}/no-match")
+    def mark_case_candidate_no_match(case_id: int, candidate_id: int) -> Dict[str, str]:
+        try:
+            FusionUseCase().mark_candidate_no_match(case_id, candidate_id)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return {"status": "no_match", "candidate_id": str(candidate_id)}
+
+    @app.post("/api/cases/{case_id}/persons/{person_id}/links")
+    def add_case_person_link(case_id: int, person_id: int, payload: ManualLinkPayload) -> Dict[str, Any]:
+        try:
+            return FusionUseCase().add_manual_link(
+                case_id,
+                person_id,
+                identifier_type=payload.identifier_type,
+                identifier_value=payload.identifier_value,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.delete("/api/cases/{case_id}/persons/{person_id}/links/{link_id}")
+    def delete_case_person_link(case_id: int, person_id: int, link_id: int) -> Dict[str, str]:
+        try:
+            FusionUseCase().remove_link(case_id, person_id, link_id)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return {"status": "deleted", "link_id": str(link_id)}
+
+    @app.get("/api/cases/{case_id}/cockpit/person/{person_id}")
+    def case_person_cockpit(case_id: int, person_id: int) -> Dict[str, Any]:
+        try:
+            return FusionUseCase().person_cockpit(case_id, person_id)
+        except ValueError as err:
+            raise HTTPException(status_code=404 if "不存在" in str(err) else 400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/cockpit/relation")
+    def case_relation_cockpit(
+        case_id: int,
+        person_a: int = Query(...),
+        person_b: int = Query(...),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            return FusionUseCase().relation_cockpit(case_id, person_a, person_b)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/cockpit/anchor")
+    def case_anchor_cockpit(
+        case_id: int,
+        value: str = Query(..., min_length=1),
+        type: str = Query(default="auto"),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            return FusionUseCase().anchor_cockpit(case_id, type, value)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/cockpit/suggest")
+    def case_anchor_suggest(
+        case_id: int,
+        q: str = Query(default=""),
+        type: str = Query(default="auto"),
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        return FusionUseCase().suggest_anchors(case_id, q, limit=limit, anchor_type=type)
+
+    @app.get("/api/cases/{case_id}/records/detail")
+    def case_record_detail(case_id: int, ref: str = Query(...)) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            return FusionUseCase().record_detail(ref)
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
 
@@ -626,6 +1178,28 @@ def create_app() -> FastAPI:
         payload: CommercialAnalysisFilterRequest,
     ) -> Dict[str, Any]:
         return CommercialAnalysisUseCase().query_records(batch_id, payload.to_filters())
+
+    @app.get("/api/wechat/{batch_id}/analysis/filter-options")
+    def wechat_analysis_filter_options(batch_id: str) -> Dict[str, List[str]]:
+        return WechatAnalysisUseCase().filter_options(batch_id)
+
+    @app.post("/api/wechat/{batch_id}/analysis/records")
+    def wechat_analysis_records(
+        batch_id: str,
+        payload: WechatAnalysisFilterRequest,
+    ) -> Dict[str, Any]:
+        return WechatAnalysisUseCase().query_records(batch_id, payload.to_filters())
+
+    @app.get("/api/telecom/{batch_id}/analysis/filter-options")
+    def telecom_analysis_filter_options(batch_id: str) -> Dict[str, List[str]]:
+        return TelecomAnalysisUseCase().filter_options(batch_id)
+
+    @app.post("/api/telecom/{batch_id}/analysis/records")
+    def telecom_analysis_records(
+        batch_id: str,
+        payload: TelecomAnalysisFilterRequest,
+    ) -> Dict[str, Any]:
+        return TelecomAnalysisUseCase().query_records(batch_id, payload.to_filters())
 
     @app.post("/api/commercial/{batch_id}/risk/run")
     def run_risk(
@@ -875,6 +1449,42 @@ def create_app() -> FastAPI:
                 header_row_0based=hdr,
             )
             return result
+        finally:
+            if tmp_path is not None and tmp_path.is_file():
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except PermissionError:
+                    pass
+
+    @app.post("/api/bank-templates/analyze-ocr-sample")
+    async def analyze_bank_template_ocr_sample(
+        file: UploadFile = File(...),
+        template_type: str = Form(...),
+        bank_name_hint: str = Form("银行数据"),
+        layout_profile_id: Optional[str] = Form(None),
+    ) -> Dict[str, Any]:
+        if template_type not in ("account_profile", "txn_detail"):
+            raise HTTPException(status_code=400, detail="template_type 无效")
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
+            raise HTTPException(status_code=400, detail=f"不支持的样本格式。{UPLOAD_FORMAT_HINT}")
+        body = await file.read()
+        tmp_path: Optional[Path] = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".png") as tmp:
+                tmp.write(body)
+                tmp_path = Path(tmp.name)
+            svc = BankTemplateOcrAnalyzeService()
+            return svc.analyze(
+                file_path=tmp_path,
+                template_type=template_type,
+                bank_name_hint=bank_name_hint.strip() or "银行数据",
+                layout_profile_id=(layout_profile_id or "").strip() or None,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        except FileNotFoundError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
         finally:
             if tmp_path is not None and tmp_path.is_file():
                 try:

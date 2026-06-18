@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Modal, Space, Table, Tooltip, Typography, message } from "antd";
+import { useSearchParams } from "react-router-dom";
 import { api, TablePreview } from "../api";
 
 const { Title, Paragraph } = Typography;
@@ -28,12 +29,17 @@ function PreviewCell({ value }: { value: unknown }) {
 }
 
 function TablesPage() {
+  const [searchParams] = useSearchParams();
   const [tables, setTables] = useState<string[]>([]);
   const [activeTable, setActiveTable] = useState<string>("");
   const [preview, setPreview] = useState<TablePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedRowIds, setSelectedRowIds] = useState<number[]>([]);
+  const [highlightRowId, setHighlightRowId] = useState<number | null>(null);
   const [tableBodyHeight, setTableBodyHeight] = useState(420);
+
+  const urlTable = searchParams.get("table") || "";
+  const urlHighlight = searchParams.get("highlight");
 
   useEffect(() => {
     const update = () => setTableBodyHeight(Math.max(260, Math.floor(window.innerHeight - 292)));
@@ -46,12 +52,19 @@ function TablesPage() {
     try {
       const data = await api.listTables();
       setTables(data.items);
-      if (data.items.length > 0 && !data.items.includes(activeTable)) {
+      const preferred = urlTable && data.items.includes(urlTable) ? urlTable : activeTable;
+      if (data.items.length > 0 && (!preferred || !data.items.includes(preferred))) {
         setActiveTable(data.items[0]);
+      } else if (preferred) {
+        setActiveTable(preferred);
       }
       if (data.items.length === 0) {
         setActiveTable("");
         setPreview(null);
+      }
+      if (urlHighlight) {
+        const parsed = Number(urlHighlight);
+        if (!Number.isNaN(parsed)) setHighlightRowId(parsed);
       }
     } catch (err) {
       message.error((err as Error).message);
@@ -216,6 +229,9 @@ function TablesPage() {
               scroll={{ x: "max-content", y: tableBodyHeight }}
               columns={columns}
               dataSource={dataSource}
+              rowClassName={(record) =>
+                highlightRowId !== null && record.__key === highlightRowId ? "tables-row-highlight" : ""
+              }
               rowSelection={{
                 selectedRowKeys: selectedRowIds,
                 onChange: (keys) => setSelectedRowIds(keys.map((k) => Number(k))),

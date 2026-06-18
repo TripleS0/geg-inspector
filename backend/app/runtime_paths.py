@@ -1,9 +1,8 @@
-"""Runtime path helpers for source, packaged backend and desktop shell runs."""
+"""Runtime path helpers for dev runs and Docker deployment."""
 
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 
@@ -15,15 +14,12 @@ def project_root() -> Path:
 def app_base_dir() -> Path:
     """Return the writable deployment directory.
 
-    PyInstaller's ``_MEIPASS`` points to a temporary extraction directory, so it
-    must not be used for persistent data. In frozen mode the executable folder
-    is the stable base directory; in source mode the repository root is used.
+    Uses ``GEG_INSPECTOR_HOME`` when set (Docker / custom runtime); otherwise the
+    repository root in development. ``DATAFUSIONX_HOME`` is kept as a backward-compatible alias.
     """
-    override = os.environ.get("DATAFUSIONX_HOME")
+    override = os.environ.get("GEG_INSPECTOR_HOME") or os.environ.get("DATAFUSIONX_HOME")
     if override:
         return Path(override).expanduser().resolve()
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
     return project_root()
 
 
@@ -57,9 +53,9 @@ def uploads_dir() -> Path:
 
 def default_db_path() -> Path:
     """Return the default SQLite database path."""
-    override = os.environ.get("DATAFUSIONX_DB_PATH")
+    override = os.environ.get("GEG_INSPECTOR_DB_PATH") or os.environ.get("DATAFUSIONX_DB_PATH")
     if override:
         path = Path(override).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-    return data_dir() / "datafusionx.sqlite3"
+    return data_dir() / "geg-inspector.sqlite3"

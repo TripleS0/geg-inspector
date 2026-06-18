@@ -1,17 +1,16 @@
-"""Tests for runtime path resolution across dev, env override, and frozen mode."""
+"""Tests for runtime path resolution across dev and env override."""
 
 from __future__ import annotations
 
 import importlib
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 class RuntimePathsTests(unittest.TestCase):
-    """Cover env overrides, frozen-mode behaviour, and folder creation."""
+    """Cover env overrides and folder creation."""
 
     def setUp(self) -> None:
         self._old_env = {
@@ -53,23 +52,6 @@ class RuntimePathsTests(unittest.TestCase):
         path = self._rp.default_db_path()
         self.assertEqual(path, target.resolve())
         self.assertTrue(path.parent.exists())
-
-    def test_frozen_mode_uses_executable_dir(self) -> None:
-        try:
-            sys.frozen = True  # type: ignore[attr-defined]
-            sys._old_executable = sys.executable  # type: ignore[attr-defined]
-            sys.executable = str(Path(self._tmp.name) / "datafusionx.exe")
-            importlib.reload(self._rp)
-            base = self._rp.app_base_dir()
-            self.assertEqual(base, Path(self._tmp.name).resolve())
-        finally:
-            try:
-                delattr(sys, "frozen")
-            except AttributeError:
-                pass
-            sys.executable = sys._old_executable  # type: ignore[attr-defined]
-            del sys._old_executable  # type: ignore[attr-defined]
-            importlib.reload(self._rp)
 
 
 if __name__ == "__main__":

@@ -228,8 +228,11 @@ def cultural_festival_tags_for_date(dt: datetime) -> list[str]:
         tags.append("特殊日期：5·20网络情人节（每年公历5月20日）")
     ZhDate = _zhdate_class()
     if ZhDate is not None and 1900 <= dt.year <= 2100:
-        lunar = ZhDate.from_datetime(dt)
-        if lunar.lunar_month == 7 and lunar.lunar_day == 7 and not lunar.leap_month:
+        try:
+            lunar = ZhDate.from_datetime(dt)
+        except (TypeError, ValueError, OverflowError):
+            lunar = None
+        if lunar is not None and lunar.lunar_month == 7 and lunar.lunar_day == 7 and not lunar.leap_month:
             tags.append(
                 "特殊日期：七夕节（农历七月初七，按当年农历换算的公历日发生交易；非闰七月初七）"
             )

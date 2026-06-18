@@ -9,3 +9,9 @@ python-multipart
 httpx
 python-docx
 matplotlib
+paddlepaddle==2.6.2
+paddleocr==2.8.1
+opencv-python-headless
+pdf2image
+Pillow
+cairosvg>=2.7.0

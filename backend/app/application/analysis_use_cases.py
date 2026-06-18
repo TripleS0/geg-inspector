@@ -12,6 +12,14 @@ from app.services.integration.commercial.analysis_service import (
     CommercialAnalysisFilters,
     CommercialAnalysisService,
 )
+from app.services.integration.telecom.analysis_service import (
+    TelecomAnalysisFilters,
+    TelecomAnalysisService,
+)
+from app.services.integration.wechat.analysis_service import (
+    WechatAnalysisFilters,
+    WechatAnalysisService,
+)
 from app.services.integration.commercial.risk_rule_service import CommercialRiskAnalysisService
 from app.services.shared.db.sqlite_client import SqliteClient
 
@@ -203,5 +211,41 @@ class CommercialAnalysisUseCase:
         self,
         batch_id: str,
         filters: CommercialAnalysisFilters | None = None,
+    ) -> dict[str, object]:
+        return self._service.query_records(batch_id, filters)
+
+
+class WechatAnalysisUseCase:
+    """Expose WeChat transfer query and statistics."""
+
+    def __init__(self, client: SqliteClient | None = None) -> None:
+        self._client = bootstrap_database(client)
+        self._service = WechatAnalysisService(self._client)
+
+    def filter_options(self, batch_id: str) -> dict[str, list[str]]:
+        return self._service.filter_options(batch_id)
+
+    def query_records(
+        self,
+        batch_id: str,
+        filters: WechatAnalysisFilters | None = None,
+    ) -> dict[str, object]:
+        return self._service.query_records(batch_id, filters)
+
+
+class TelecomAnalysisUseCase:
+    """Expose telecom CDR query and call statistics."""
+
+    def __init__(self, client: SqliteClient | None = None) -> None:
+        self._client = bootstrap_database(client)
+        self._service = TelecomAnalysisService(self._client)
+
+    def filter_options(self, batch_id: str) -> dict[str, list[str]]:
+        return self._service.filter_options(batch_id)
+
+    def query_records(
+        self,
+        batch_id: str,
+        filters: TelecomAnalysisFilters | None = None,
     ) -> dict[str, object]:
         return self._service.query_records(batch_id, filters)

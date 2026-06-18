@@ -22,6 +22,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   api,
   BatchInfo,
+  batchLabel,
   EntityMatchRow,
   RiskEvent,
   RiskRuleItem,
@@ -414,7 +415,7 @@ function CommercialRiskPage() {
             onChange={(val) => setBatchId(val)}
             options={commercialBatches.map((b) => ({
               value: b.import_batch_id,
-              label: `${b.import_batch_id.slice(0, 8)}… (${b.file_count} · ${b.imported_at})`,
+              label: `${batchLabel(b)} (${b.file_count} · ${b.imported_at})`,
             }))}
           />
           <span>工商批次（可空）：</span>
@@ -425,7 +426,7 @@ function CommercialRiskPage() {
             onChange={(val) => setEnterpriseBatch(val || undefined)}
             options={enterpriseBatches.map((b) => ({
               value: b.import_batch_id,
-              label: `${b.import_batch_id.slice(0, 8)}… (${b.file_count} 条)`,
+              label: `${batchLabel(b)} (${b.file_count} 条)`,
             }))}
           />
           <Button type="primary" loading={running} onClick={() => void runRisk()}>

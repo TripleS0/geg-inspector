@@ -41,13 +41,13 @@ class UseCaseEnvironmentTests(unittest.TestCase):
     def test_bootstrap_persists_schema(self) -> None:
         rows = self.client.query_all(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('meta_schema_version', 'ana_task', 'std_bank_txn', 'cfg_risk_rule');"
+            "('meta_schema_version', 'ana_task', 'std_bank_txn', 'cfg_risk_rule', 'meta_ocr_job');"
         )
         names = {row[0] for row in rows}
-        for required in {"meta_schema_version", "ana_task", "std_bank_txn", "cfg_risk_rule"}:
+        for required in {"meta_schema_version", "ana_task", "std_bank_txn", "cfg_risk_rule", "meta_ocr_job"}:
             self.assertIn(required, names)
-        version_rows = self.client.query_all("SELECT version FROM meta_schema_version;")
-        self.assertEqual([row[0] for row in version_rows], [1])
+        version_rows = self.client.query_all("SELECT version FROM meta_schema_version ORDER BY version;")
+        self.assertEqual([row[0] for row in version_rows], [1, 2, 3])
 
     def test_dataset_use_case_lists_seeded_batches(self) -> None:
         self.client.execute(
@@ -81,6 +81,48 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         self.assertIn("batch-A", ids)
         self.assertIn("ent-1", ids)
         self.assertEqual(types["ent-1"], "enterprise")
+
+    def test_batch_name_set_rename_and_delete(self) -> None:
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('demo.xlsx', '/tmp/demo.xlsx', 'h1', 'BankA', 'bank', 'batch-named', 'imported');"
+        )
+        uc = DatasetUseCase(self.client)
+        uc.set_batch_name("batch-named", "张三建行流水", "bank")
+        listed = uc.list_batches(source_type="bank")
+        self.assertEqual(listed[0].batch_name, "张三建行流水")
+        updated = uc.rename_batch("batch-named", "张三2月流水")
+        self.assertEqual(updated.batch_name, "张三2月流水")
+        uc.delete_import_batch("batch-named")
+        rows = self.client.query_all(
+            "SELECT COUNT(*) FROM meta_import_batch WHERE import_batch_id='batch-named';"
+        )
+        self.assertEqual(int(rows[0][0]), 0)
+
+    def test_delete_import_batch_blocked_when_bound_to_case(self) -> None:
+        self.client.execute(
+            "INSERT INTO std_case(case_name, description, status) VALUES ('测试案件', '', 'active');"
+        )
+        case_id = int(self.client.query_all("SELECT case_id FROM std_case LIMIT 1;")[0][0])
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('demo.xlsx', '/tmp/demo.xlsx', 'h1', 'BankA', 'bank', 'batch-bound', 'imported');"
+        )
+        self.client.execute(
+            "INSERT INTO rel_case_batch(case_id, import_batch_id, source_type) VALUES (?, 'batch-bound', 'bank');",
+            (case_id,),
+        )
+        uc = DatasetUseCase(self.client)
+        with self.assertRaisesRegex(ValueError, "已绑定案件"):
+            uc.delete_import_batch("batch-bound")
+        self.assertEqual(
+            int(
+                self.client.query_all(
+                    "SELECT COUNT(*) FROM meta_bank_files WHERE import_batch_id='batch-bound';"
+                )[0][0]
+            ),
+            1,
+        )
 
     def test_delete_import_batch_bank_and_enterprise(self) -> None:
         self.client.execute(
@@ -128,6 +170,16 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.client.query_all("SELECT COUNT(*) FROM rel_biz_enterprise_match WHERE enterprise_id=?;", (eid,))[0][0],
+            0,
+        )
+
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('wx.xlsx', '/tmp/wx.xlsx', 'h2', '微信', 'wechat', 'batch-wx-del', 'imported');"
+        )
+        uc.delete_import_batch("batch-wx-del")
+        self.assertEqual(
+            self.client.query_all("SELECT COUNT(*) FROM meta_bank_files WHERE import_batch_id='batch-wx-del';")[0][0],
             0,
         )
 

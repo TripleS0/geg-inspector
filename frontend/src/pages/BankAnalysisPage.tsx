@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Col, Form, InputNumber, Row, Select, Space, Table, Tabs, Tag, Typography, message } from "antd";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
-import { api, BankFilter, BankRecordsResponse, BatchInfo, ModuleParams } from "../api";
+import { api, BankFilter, BankRecordsResponse, BatchInfo, batchLabel, ModuleParams } from "../api";
 import { chartPair, chartPalette } from "../theme";
+import { AnalysisDateTimeFilterFields, AnalysisDateTimeFormFields, serializeAnalysisDateTimeFilters } from "../components/AnalysisDateTimeFilters";
+
+type BankFilterForm = BankFilter & AnalysisDateTimeFormFields;
 
 const { Title, Paragraph } = Typography;
 
@@ -39,7 +42,7 @@ function BankAnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [batches, setBatches] = useState<BatchInfo[]>([]);
   const [batchId, setBatchId] = useState<string>("");
-  const [filter] = Form.useForm<BankFilter>();
+  const [filter] = Form.useForm<BankFilterForm>();
   const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({});
   const [records, setRecords] = useState<BankRecordsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -76,7 +79,7 @@ function BankAnalysisPage() {
     setLoading(true);
     try {
       const values = await filter.validateFields();
-      const data = await api.bankRecords(batchId, values || {});
+      const data = await api.bankRecords(batchId, serializeAnalysisDateTimeFilters(values));
       setRecords(data);
     } catch (err) {
       message.error((err as Error).message);
@@ -191,7 +194,7 @@ function BankAnalysisPage() {
             onChange={(val) => setBatchId(val)}
             options={batches.map((b) => ({
               value: b.import_batch_id,
-              label: `${b.import_batch_id.slice(0, 8)}… (${b.file_count} 文件 · ${b.imported_at})`,
+              label: `${batchLabel(b)} (${b.file_count} 文件 · ${b.imported_at})`,
             }))}
           />
         </Space>
@@ -236,6 +239,7 @@ function BankAnalysisPage() {
                         <InputNumber style={{ width: "100%" }} />
                       </Form.Item>
                     </Col>
+                    <AnalysisDateTimeFilterFields dateCol={{ span: 6 }} timeCol={{ span: 6 }} />
                   </Row>
                   <Space>
                     <Button type="primary" loading={loading} onClick={runQuery}>查询并生成描述</Button>

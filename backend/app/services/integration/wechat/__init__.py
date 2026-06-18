@@ -1,0 +1,1 @@
+"""WeChat transfer integration services."""

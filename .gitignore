@@ -7,17 +7,15 @@ build/
 backend/app/resources/config/db.json
 backend/app/resources/config/qichacha_config.json
 
-# Offline desktop runtime data
+# Offline runtime data
 data/
 logs/
 exports/
-backend-dist/
 
 # Frontend tooling
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
-# Tauri shell
-src-tauri/target/
-src-tauri/Cargo.lock
+# Docker delivery output
+dist/

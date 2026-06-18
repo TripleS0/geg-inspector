@@ -18,7 +18,7 @@ VSVersionInfo(
             StringStruct(u'CompanyName', u'广东电力开发有限公司'),
             StringStruct(u'FileDescription', u'数据处理工具'),
             StringStruct(u'FileVersion', u'1.0.0.0'),
-            StringStruct(u'InternalName', u'DataFusionX'),
+            StringStruct(u'InternalName', u'geg-inspector'),
             StringStruct(u'LegalCopyright', u'Copyright (C) 广东电力开发有限公司'),
             StringStruct(u'OriginalFilename', u'数据处理工具-广东电力开发有限公司-版本v1.0.0.exe'),
             StringStruct(u'ProductName', u'数据处理工具-广东电力开发有限公司'),

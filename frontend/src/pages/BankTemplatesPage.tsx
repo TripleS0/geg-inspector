@@ -24,6 +24,7 @@ import { DeleteOutlined, ReloadOutlined, SaveOutlined, SettingOutlined } from "@
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import {
+  analyzeBankTemplateOcrSample,
   analyzeBankTemplateSample,
   api,
   BankTemplateAnalyzeResult,
@@ -106,6 +107,7 @@ function BankTemplatesPage() {
     header_row_0based?: number | null;
   }>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [sampleKind, setSampleKind] = useState<"excel" | "ocr">("excel");
   const [sheetOptions, setSheetOptions] = useState<string[]>([]);
   const [templates, setTemplates] = useState<UserBankTemplate[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -133,25 +135,34 @@ function BankTemplatesPage() {
   const runAnalyze = async () => {
     const file = firstFile(fileList);
     if (!file) {
-      message.warning("请先选择 Excel 文件");
+      message.warning(sampleKind === "ocr" ? "请先选择图片或 PDF 样本" : "请先选择 Excel 文件");
       return;
     }
     const values = await form.validateFields(["template_type", "bank_display_name"]);
     const selectedSheetName = form.getFieldValue("sheet_name") || "";
     setAnalyzing(true);
     try {
-      const result = await analyzeBankTemplateSample({
-        file,
-        sheetName: selectedSheetName,
-        templateType: values.template_type,
-        bankNameHint: values.bank_display_name,
-        headerRow0based: form.getFieldValue("header_row_0based") ?? null,
-      });
+      const result =
+        sampleKind === "ocr"
+          ? await analyzeBankTemplateOcrSample({
+              file,
+              templateType: values.template_type,
+              bankNameHint: values.bank_display_name,
+            })
+          : await analyzeBankTemplateSample({
+              file,
+              sheetName: selectedSheetName,
+              templateType: values.template_type,
+              bankNameHint: values.bank_display_name,
+              headerRow0based: form.getFieldValue("header_row_0based") ?? null,
+            });
       setAnalyzeResult(result);
       setMapping(result.suggested_mapping || {});
       setDirectionRules(defaultDirectionRules(result.direction_distinct_values || []));
-      form.setFieldsValue({ header_row_0based: result.header_row_selected_0based });
-      message.success("样本识别完成，请检查字段映射与规则");
+      if (sampleKind === "excel") {
+        form.setFieldsValue({ header_row_0based: result.header_row_selected_0based });
+      }
+      message.success(sampleKind === "ocr" ? "OCR 样本识别完成，请检查字段映射与规则" : "样本识别完成，请检查字段映射与规则");
     } catch (err) {
       message.error((err as Error).message);
     } finally {
@@ -166,6 +177,11 @@ function BankTemplatesPage() {
     setDirectionRules({});
     const file = firstFile(next);
     if (!file) {
+      setSheetOptions([]);
+      form.setFieldsValue({ sheet_name: undefined });
+      return;
+    }
+    if (sampleKind === "ocr") {
       setSheetOptions([]);
       form.setFieldsValue({ sheet_name: undefined });
       return;
@@ -303,7 +319,7 @@ function BankTemplatesPage() {
       <Card className="app-card">
         <Title level={3}>银行模板录入</Title>
         <Paragraph type="secondary">
-          通过样本识别表头，拖拽源字段到标准字段，并配置借贷标志、日期时间等规则。
+          通过 Excel 或 OCR 样本识别表头，拖拽源字段到标准字段，并配置借贷标志、日期时间等规则。
         </Paragraph>
         <Steps
           current={analyzeResult ? 1 : 0}
@@ -315,9 +331,27 @@ function BankTemplatesPage() {
         <Col span={8}>
           <Card title="1. 上传与识别" className="app-card">
             <Form layout="vertical" form={form}>
-              <Form.Item label="样本 Excel">
+              <Form.Item label="样本来源">
+                <Radio.Group
+                  value={sampleKind}
+                  onChange={(event) => {
+                    const next = event.target.value as "excel" | "ocr";
+                    setSampleKind(next);
+                    setFileList([]);
+                    setSheetOptions([]);
+                    setAnalyzeResult(null);
+                    setMapping({});
+                    setDirectionRules({});
+                    form.setFieldsValue({ sheet_name: undefined, header_row_0based: undefined });
+                  }}
+                >
+                  <Radio.Button value="excel">Excel 样本</Radio.Button>
+                  <Radio.Button value="ocr">图片 / PDF（OCR）</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+              <Form.Item label={sampleKind === "ocr" ? "样本图片 / PDF" : "样本 Excel"}>
                 <Upload
-                  accept=".xlsx,.xls"
+                  accept={sampleKind === "ocr" ? ".png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.gif,.svg,.pdf" : ".xlsx,.xls"}
                   fileList={fileList}
                   beforeUpload={() => false}
                   maxCount={1}
@@ -335,7 +369,7 @@ function BankTemplatesPage() {
               <Form.Item name="bank_display_name" label="银行名称" rules={[{ required: true }]}>
                 <Input placeholder="如：工商银行" />
               </Form.Item>
-              <Form.Item name="sheet_name" label="Sheet 名称">
+              <Form.Item name="sheet_name" label="Sheet 名称" hidden={sampleKind === "ocr"}>
                 <Select
                   allowClear
                   showSearch
@@ -347,11 +381,12 @@ function BankTemplatesPage() {
                 name="header_row_0based"
                 label="表头行（清理空行/标题后的 0 基序号，可留空自动识别）"
                 tooltip="有些银行导出会包含隐藏空行、Unnamed 行或标题行；这里的行号按系统清理后的样本区编号。"
+                hidden={sampleKind === "ocr"}
               >
                 <InputNumber min={0} style={{ width: "100%" }} />
               </Form.Item>
               <Button type="primary" loading={analyzing} icon={<ReloadOutlined />} onClick={runAnalyze}>
-                识别样本
+                {sampleKind === "ocr" ? "OCR 识别样本" : "识别样本"}
               </Button>
             </Form>
           </Card>
@@ -363,11 +398,26 @@ function BankTemplatesPage() {
               <>
                 <Descriptions size="small" column={3} style={{ marginBottom: 12 }}>
                   <Descriptions.Item label="文件">{analyzeResult.file_name}</Descriptions.Item>
-                  <Descriptions.Item label="Sheet">{analyzeResult.sheet_name}</Descriptions.Item>
-                  <Descriptions.Item label="表头行">
-                    清理后第 {analyzeResult.header_row_selected_0based} 行
+                  <Descriptions.Item label="来源">
+                    {analyzeResult.input_kind === "ocr" ? "OCR 识别" : "Excel"}
                   </Descriptions.Item>
+                  <Descriptions.Item label="Sheet">{analyzeResult.sheet_name}</Descriptions.Item>
+                  {analyzeResult.input_kind !== "ocr" ? (
+                    <Descriptions.Item label="表头行">
+                      清理后第 {analyzeResult.header_row_selected_0based} 行
+                    </Descriptions.Item>
+                  ) : null}
                 </Descriptions>
+                {analyzeResult.ocr_page_meta && Object.keys(analyzeResult.ocr_page_meta).length ? (
+                  <Alert
+                    style={{ marginBottom: 12 }}
+                    type="info"
+                    showIcon
+                    message={`OCR 页眉：${Object.entries(analyzeResult.ocr_page_meta)
+                      .map(([key, value]) => `${key}=${value}`)
+                      .join("；")}`}
+                  />
+                ) : null}
                 <div style={{ marginBottom: 12 }}>
                   <Text strong>源文件表头：</Text>
                   <Space wrap style={{ marginLeft: 8 }}>

@@ -5,6 +5,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   api,
   BatchInfo,
+  batchLabel,
   CommercialAnalysisFilter,
   CommercialAnalysisRecord,
   CommercialAnalysisResponse,
@@ -187,7 +188,7 @@ function CommercialAnalysisPage() {
             onChange={(val) => setBatchId(val)}
             options={batches.map((b) => ({
               value: b.import_batch_id,
-              label: `${b.import_batch_id.slice(0, 8)}… (${b.file_count} 文件 · ${b.imported_at})`,
+              label: `${batchLabel(b)} (${b.file_count} 文件 · ${b.imported_at})`,
             }))}
           />
           <Button loading={exporting} onClick={() => void exportReport()}>导出统计 Word</Button>
