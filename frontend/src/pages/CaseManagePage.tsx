@@ -258,7 +258,7 @@ function CaseManagePage() {
               <Button onClick={() => void discover()}>扫描候选标识</Button>
               <Button type="primary" onClick={() => void autoLink()}>机器预关联</Button>
               <Button onClick={() => navigate(`/person-linking?case=${selectedCaseId}`)}>人物关联</Button>
-              <Button type="primary" onClick={() => navigate(`/fusion-cockpit?case=${selectedCaseId}`)}>
+              <Button type="primary" onClick={() => navigate(`/fusion-cockpit?case=${selectedCaseId}&view=analysis&tab=open`)}>
                 融合驾驶舱
               </Button>
             </>
@@ -309,7 +309,7 @@ function CaseManagePage() {
                 <Button size="small" onClick={() => navigate(`/person-linking?case=${row.case_id}`)}>
                   关联
                 </Button>
-                <Button size="small" type="primary" onClick={() => navigate(`/fusion-cockpit?case=${row.case_id}`)}>
+                <Button size="small" type="primary" onClick={() => navigate(`/fusion-cockpit?case=${row.case_id}&view=analysis&tab=open`)}>
                   驾驶舱
                 </Button>
                 <Popconfirm title="删除案件及人物关联？" onConfirm={() => void deleteCase(row.case_id)}>

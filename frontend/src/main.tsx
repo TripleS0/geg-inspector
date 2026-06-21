@@ -9,35 +9,33 @@ import "antd/dist/reset.css";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        algorithm: antdTheme.defaultAlgorithm,
-        token: {
-          colorPrimary: appTheme.colorPrimary,
-          colorInfo: appTheme.colorPrimary,
-          colorLink: appTheme.colorLink,
-          colorSuccess: "#52a368",
-          colorWarning: "#e8a23c",
-          colorError: "#d23b26",
-          borderRadius: 10,
-          wireframe: false,
+  <ConfigProvider
+    locale={zhCN}
+    theme={{
+      algorithm: antdTheme.defaultAlgorithm,
+      token: {
+        colorPrimary: appTheme.colorPrimary,
+        colorInfo: appTheme.colorPrimary,
+        colorLink: appTheme.colorLink,
+        colorSuccess: "#52a368",
+        colorWarning: "#e8a23c",
+        colorError: "#d23b26",
+        borderRadius: 10,
+        wireframe: false,
+      },
+      components: {
+        Button: {
+          primaryShadow: "0 6px 16px rgba(217, 72, 50, 0.22)",
         },
-        components: {
-          Button: {
-            primaryShadow: "0 6px 16px rgba(217, 72, 50, 0.22)",
-          },
-          Progress: {
-            defaultColor: appTheme.colorPrimary,
-            remainingColor: "rgba(217, 72, 50, 0.12)",
-          },
+        Progress: {
+          defaultColor: appTheme.colorPrimary,
+          remainingColor: "rgba(217, 72, 50, 0.12)",
         },
-      }}
-    >
-      <HashRouter>
-        <App />
-      </HashRouter>
-    </ConfigProvider>
-  </React.StrictMode>
+      },
+    }}
+  >
+    <HashRouter>
+      <App />
+    </HashRouter>
+  </ConfigProvider>
 );

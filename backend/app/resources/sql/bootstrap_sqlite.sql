@@ -382,6 +382,21 @@ VALUES (2, 'Case, person linking and fusion cockpit tables');
 INSERT OR IGNORE INTO meta_schema_version (version, description)
 VALUES (3, 'Bank OCR draft jobs for image/PDF statement import');
 
+CREATE TABLE IF NOT EXISTS cfg_fusion_model (
+    case_id INTEGER NOT NULL,
+    model_key TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (case_id, model_key),
+    FOREIGN KEY (case_id) REFERENCES std_case(case_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cfg_fusion_model_case ON cfg_fusion_model(case_id);
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (4, 'Fusion model config per case for event management');
+
 INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version) VALUES
 ('R001', '围标疑似', 1, 1.0, '{"min_shared_inquiries":3,"min_companies_together":3,"note":"同一批项目中多家企业高频共同参标"}', 1),
 ('R002', '串标疑似', 1, 1.0, '{"min_inquiries":3,"min_pair_overlap_ratio":0.8,"note":"企业对在多个项目中高度同步出现"}', 1),

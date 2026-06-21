@@ -47,6 +47,104 @@ export interface ModuleParams {
   special_amount_whitelist?: number[];
 }
 
+export interface FusionModelItem {
+  model_key: string;
+  name: string;
+  category: string;
+  category_label: string;
+  description: string;
+  event_type_label: string;
+  param_schema: string[];
+  enabled: boolean;
+  params: Record<string, unknown>;
+}
+
+export interface FusionModelCategory {
+  category: string;
+  category_label: string;
+  models: FusionModelItem[];
+}
+
+export interface FusionModelsResponse {
+  case_id: number;
+  items: FusionModelItem[];
+  categories: FusionModelCategory[];
+}
+
+export interface FusionEventItem {
+  event_id: string;
+  event_type: string;
+  event_type_key: string;
+  related_person: string;
+  date: string;
+  description: string;
+  source: string;
+  batch_id: string;
+  model_key: string;
+  rule_code?: string;
+}
+
+export interface FusionEventsResponse {
+  case_id: number;
+  total: number;
+  items: FusionEventItem[];
+  available_event_types: string[];
+  summary: {
+    enabled_model_count: number;
+    event_count: number;
+    by_event_type: Record<string, number>;
+  };
+}
+
+export interface DataCenterRecord {
+  record_kind: "txn" | "enterprise";
+  record_id: number;
+  source_type: string;
+  source_type_label: string;
+  import_batch_id: string;
+  content: string;
+  record_date: string;
+  source_file: string;
+}
+
+export interface DataCenterRecordsResponse {
+  items: DataCenterRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DataCenterDashboardResponse {
+  case_id: number | null;
+  overview: {
+    record_count: number;
+    txn_count: number;
+    enterprise_count: number;
+    batch_count: number;
+    case_count: number;
+    person_count: number;
+  };
+  source_distribution: Array<{ source_type: string; label: string; count: number }>;
+  timeline: {
+    months: string[];
+    series: Array<{ source_type: string; label: string; data: number[] }>;
+  };
+  batch_ranking: Array<{
+    import_batch_id: string;
+    batch_name: string;
+    source_type: string;
+    source_type_label: string;
+    count: number;
+  }>;
+  person_ranking: Array<{
+    person_name: string;
+    transfer_count: number;
+    call_count: number;
+    total_score: number;
+  }>;
+  event_distribution: Array<{ event_type: string; count: number }>;
+}
+
 export interface CommercialAnalysisFilter {
   company_name?: string;
   purchaser?: string;
@@ -485,6 +583,79 @@ export interface AnchorSuggestItem {
   person_id?: number | null;
   person_name?: string;
   source: string;
+}
+
+export interface GraphExploreRequest {
+  anchors: Array<{ type: string; value: string }>;
+  display_level: number;
+  unlimited?: boolean;
+  relation_types: string[];
+  min_weight?: number;
+  max_nodes?: number;
+  max_edges?: number;
+  include_sample_records?: boolean;
+}
+
+export interface GraphExploreNode {
+  id: string;
+  label: string;
+  type: string;
+  display_type: string;
+  depth: number;
+  is_anchor: boolean;
+  anchor_index?: number | null;
+  degree: number;
+  stats: Record<string, number>;
+}
+
+export interface GraphExploreEdge {
+  id: string;
+  source: string;
+  target: string;
+  type: string;
+  display_type: string;
+  weight: number;
+  amount?: number | null;
+  duration_sec?: number | null;
+  record_count: number;
+  sample_records: Array<Record<string, unknown>>;
+}
+
+export interface GraphExplorePath {
+  id: string;
+  source_anchor: string;
+  target_anchor: string;
+  length: number;
+  nodes: string[];
+  edges: string[];
+  relation_types: string[];
+}
+
+export interface GraphExploreResponse {
+  case_id: number;
+  anchors: string[];
+  display_level: number;
+  unlimited: boolean;
+  truncated: boolean;
+  truncated_reason?: string | null;
+  nodes: GraphExploreNode[];
+  edges: GraphExploreEdge[];
+  paths: GraphExplorePath[];
+  common_neighbors: Array<{
+    node_id: string;
+    label: string;
+    type: string;
+    relation_types: string[];
+    paths: string[][];
+  }>;
+  summary: {
+    node_count: number;
+    edge_count: number;
+    path_count: number;
+    common_neighbor_count: number;
+    relation_type_counts: Record<string, number>;
+    depth_counts: Record<string, number>;
+  };
 }
 
 export interface RecordDetailResponse {
@@ -959,10 +1130,71 @@ export const api = {
       }).toString()}`
     ),
 
+  exploreGraph: (caseId: number, body: GraphExploreRequest) =>
+    http<GraphExploreResponse>(`/api/cases/${caseId}/graph/explore`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   recordDetail: (caseId: number, sourceRef: Record<string, unknown>) =>
     http<RecordDetailResponse>(
       `/api/cases/${caseId}/records/detail?ref=${encodeURIComponent(JSON.stringify(sourceRef))}`
     ),
+
+  listFusionModels: (caseId: number) =>
+    http<FusionModelsResponse>(`/api/cases/${caseId}/fusion/models`),
+
+  saveFusionModels: (
+    caseId: number,
+    items: Array<{ model_key: string; enabled: boolean; params?: Record<string, unknown> }>
+  ) =>
+    http<FusionModelsResponse>(`/api/cases/${caseId}/fusion/models`, {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    }),
+
+  scanFusionEvents: (
+    caseId: number,
+    filters?: { start_date?: string; end_date?: string; keyword?: string; event_type?: string }
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.start_date) params.set("start_date", filters.start_date);
+    if (filters?.end_date) params.set("end_date", filters.end_date);
+    if (filters?.keyword) params.set("keyword", filters.keyword);
+    if (filters?.event_type) params.set("event_type", filters.event_type);
+    const qs = params.toString();
+    return http<FusionEventsResponse>(`/api/cases/${caseId}/fusion/events${qs ? `?${qs}` : ""}`);
+  },
+
+  listDataCenterRecords: (params?: {
+    case_id?: number;
+    batch_id?: string;
+    source_type?: string;
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.case_id) qs.set("case_id", String(params.case_id));
+    if (params?.batch_id) qs.set("batch_id", params.batch_id);
+    if (params?.source_type) qs.set("source_type", params.source_type);
+    if (params?.keyword) qs.set("keyword", params.keyword);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    const query = qs.toString();
+    return http<DataCenterRecordsResponse>(`/api/data-center/records${query ? `?${query}` : ""}`);
+  },
+
+  deleteDataCenterRecords: (items: Array<{ record_kind: string; record_id: number }>) =>
+    http<{ deleted: number }>("/api/data-center/records", {
+      method: "DELETE",
+      body: JSON.stringify({ items }),
+    }),
+
+  getDataCenterDashboard: (caseId?: number | null) => {
+    const qs = caseId ? `?case_id=${caseId}` : "";
+    return http<DataCenterDashboardResponse>(`/api/data-center/dashboard${qs}`);
+  },
 };
 
 export async function analyzeBankTemplateSample(params: {

@@ -7,7 +7,10 @@ from typing import Any
 
 from app.application.bootstrap import bootstrap_database
 from app.services.fusion.auto_link_service import AutoLinkService
+from app.services.fusion.fusion_event_service import FusionEventService
+from app.services.fusion.fusion_model_service import FusionModelService
 from app.services.fusion.fusion_query_service import FusionQueryService
+from app.services.fusion.graph_explore_service import GraphExploreService
 from app.services.fusion.identifier_discovery_service import IdentifierDiscoveryService
 from app.services.fusion.person_link_service import PersonLinkService
 from app.services.fusion.record_detail_service import RecordDetailService
@@ -21,7 +24,33 @@ class FusionUseCase:
         self._person_links = PersonLinkService(self._client)
         self._auto_link = AutoLinkService(self._client)
         self._fusion = FusionQueryService(self._client)
+        self._graph_explore = GraphExploreService(self._client)
         self._records = RecordDetailService(self._client)
+        self._models = FusionModelService(self._client)
+        self._events = FusionEventService(self._client)
+
+    def list_fusion_models(self, case_id: int) -> dict[str, Any]:
+        return self._models.list_models(case_id)
+
+    def save_fusion_models(self, case_id: int, updates: list[dict[str, Any]]) -> dict[str, Any]:
+        return self._models.save_models(case_id, updates)
+
+    def scan_fusion_events(
+        self,
+        case_id: int,
+        *,
+        start_date: str = "",
+        end_date: str = "",
+        keyword: str = "",
+        event_type: str = "",
+    ) -> dict[str, Any]:
+        return self._events.scan_events(
+            case_id,
+            start_date=start_date,
+            end_date=end_date,
+            keyword=keyword,
+            event_type=event_type,
+        )
 
     def discover(self, case_id: int) -> dict[str, Any]:
         result = self._discovery.discover(case_id)
@@ -141,6 +170,9 @@ class FusionUseCase:
         anchor_type: str = "auto",
     ) -> dict[str, Any]:
         return {"items": self._fusion.suggest_anchors(case_id, query, limit=limit, anchor_type=anchor_type)}
+
+    def explore_graph(self, case_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._graph_explore.explore(case_id, payload)
 
     def record_detail(self, source_ref_json: str) -> dict[str, Any]:
         try:

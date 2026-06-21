@@ -20,8 +20,10 @@ import {
   message,
 } from "antd";
 import {
+  ArrowLeftOutlined,
   ArrowRightOutlined,
   BankOutlined,
+  ForkOutlined,
   PhoneOutlined,
   ReloadOutlined,
   TeamOutlined,
@@ -138,7 +140,13 @@ const ANCHOR_TYPE_LABELS: Record<string, string> = {
   person_name: "姓名",
 };
 
-function FusionCockpitPage() {
+interface FusionCockpitPageProps {
+  embeddedInHub?: boolean;
+  caseIdOverride?: number | null;
+  onBackToOpenList?: () => void;
+}
+
+function FusionCockpitPage({ embeddedInHub = false, caseIdOverride = null, onBackToOpenList }: FusionCockpitPageProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [mode, setMode] = useState<"person" | "relation" | "anchor">("person");
@@ -171,18 +179,35 @@ function FusionCockpitPage() {
   const personOptions = useMemo(() => persons.map(buildPersonOption), [persons]);
   const overviewData = mode === "anchor" ? anchorData : personData;
 
+  const syncCaseQuery = useCallback(
+    (id: number) => {
+      if (embeddedInHub) {
+        const next = new URLSearchParams(searchParams);
+        next.set("case", String(id));
+        next.set("view", "analysis");
+        next.set("tab", "open");
+        setSearchParams(next, { replace: true });
+      } else {
+        setSearchParams({ case: String(id) });
+      }
+    },
+    [embeddedInHub, searchParams, setSearchParams]
+  );
+
   const refreshCases = useCallback(async () => {
     const data = await api.listCases();
     setCases(data.items.map((c) => ({ case_id: c.case_id, case_name: c.case_name, batch_count: c.batch_count })));
     const param = searchParams.get("case");
     const stored = localStorage.getItem(CASE_STORAGE_KEY);
-    const preferred = param ? Number(param) : stored ? Number(stored) : null;
+    const preferred = caseIdOverride ?? (param ? Number(param) : stored ? Number(stored) : null);
     const next =
       preferred && data.items.some((c) => c.case_id === preferred)
         ? preferred
-        : data.items[0]?.case_id ?? null;
+        : embeddedInHub
+          ? caseIdOverride ?? null
+          : data.items[0]?.case_id ?? null;
     setCaseId(next);
-  }, [searchParams]);
+  }, [caseIdOverride, embeddedInHub, searchParams]);
 
   const refreshPersons = useCallback(async (id: number) => {
     try {
@@ -225,7 +250,7 @@ function FusionCockpitPage() {
       const nextCaseId = (event as CustomEvent<{ caseId?: number }>).detail?.caseId;
       if (nextCaseId && nextCaseId !== caseId) {
         setCaseId(nextCaseId);
-        setSearchParams({ case: String(nextCaseId) });
+        syncCaseQuery(nextCaseId);
         setPersonId(null);
         setPersonBId(null);
         setPersons([]);
@@ -236,14 +261,16 @@ function FusionCockpitPage() {
     };
     window.addEventListener(CASE_CHANGED_EVENT, onCaseChanged);
     return () => window.removeEventListener(CASE_CHANGED_EVENT, onCaseChanged);
-  }, [caseId, setSearchParams]);
+  }, [caseId, syncCaseQuery]);
 
   useEffect(() => {
     if (!caseId) return;
     localStorage.setItem(CASE_STORAGE_KEY, String(caseId));
-    setSearchParams({ case: String(caseId) });
+    if (!embeddedInHub || searchParams.get("case") !== String(caseId)) {
+      syncCaseQuery(caseId);
+    }
     void refreshPersons(caseId).catch((err) => message.error((err as Error).message));
-  }, [caseId, refreshPersons, setSearchParams]);
+  }, [caseId, embeddedInHub, refreshPersons, searchParams, syncCaseQuery]);
 
   const loadPersonCockpit = useCallback(async () => {
     if (!caseId || !personId || !persons.some((item) => item.person_id === personId)) return;
@@ -682,7 +709,11 @@ function FusionCockpitPage() {
     : !hasBoundBatch
       ? "融合分析必须基于当前案件的数据范围，请先进入批次管理，把导入批次加入当前案件。"
       : "融合分析必须基于人物标识关联结果，请先进入人物关联，扫描候选并关联人物。";
-  const cockpitBlockAction = !caseId ? { label: "去案件管理", to: "/cases" } : !hasBoundBatch ? { label: "去绑定批次", to: "/batches" } : { label: "去人物关联", to: `/person-linking?case=${caseId}` };
+  const cockpitBlockAction = !caseId
+    ? { label: embeddedInHub ? "去打开案件" : "去案件管理", to: embeddedInHub ? "/fusion-cockpit?tab=open" : "/cases" }
+    : !hasBoundBatch
+      ? { label: embeddedInHub ? "去新建案件" : "去绑定批次", to: embeddedInHub ? "/fusion-cockpit?tab=new" : "/batches" }
+      : { label: "去人物关联", to: `/person-linking?case=${caseId}` };
   const guideSteps = buildWorkflowSteps({
     ...DEFAULT_WORKFLOW_SNAPSHOT,
     caseCount: cases.length,
@@ -692,6 +723,17 @@ function FusionCockpitPage() {
     linkedIdentifierCount,
     selectedCaseId: caseId,
   });
+
+  const openGraphExplore = useCallback(
+    (personOverride?: number | null) => {
+      const targetPerson = personOverride ?? personId;
+      const query = new URLSearchParams();
+      if (caseId) query.set("case", String(caseId));
+      if (targetPerson) query.set("person", String(targetPerson));
+      navigate(`/fusion-cockpit/graph?${query.toString()}`);
+    },
+    [caseId, navigate, personId]
+  );
 
   const renderKpiValue = (key: string) => {
     if (!kpiTiles) return { main: "—", sub: "" };
@@ -734,20 +776,25 @@ function FusionCockpitPage() {
 
   return (
     <div className="cockpit-page">
-      <WorkflowGuide steps={guideSteps} currentKey="fusion-cockpit" compact />
+      {!embeddedInHub ? <WorkflowGuide steps={guideSteps} currentKey="fusion-cockpit" compact /> : null}
       <div className="cockpit-hero">
         <div className="cockpit-hero-bg" />
         <div className="cockpit-hero-content">
           <div>
             <Text className="cockpit-hero-kicker">FUSION COCKPIT</Text>
             <Title level={3} style={{ margin: "4px 0 8px", color: "#fff" }}>
-              融合数据驾驶舱
+              融合分析驾驶舱
             </Title>
             <Text style={{ color: "rgba(255,255,255,0.82)" }}>
-              {caseName || "请先在顶部选择当前案件"} · 基于人物关联结果跨源聚合分析
+              {caseName || "请先在顶部选择当前案件"} · 综合研判 · 基于人物关联结果跨源聚合分析
             </Text>
           </div>
           <Space wrap className="cockpit-hero-controls">
+            {embeddedInHub && onBackToOpenList ? (
+              <Button ghost icon={<ArrowLeftOutlined />} onClick={onBackToOpenList}>
+                返回打开案件
+              </Button>
+            ) : null}
             <Segmented
               className="cockpit-mode-segment"
               value={mode}
@@ -758,8 +805,8 @@ function FusionCockpitPage() {
                 { value: "anchor", label: "自由检索" },
               ]}
             />
-            <Button ghost onClick={() => navigate(caseId ? `/person-linking?case=${caseId}` : "/person-linking")}>
-              人物关联
+            <Button ghost icon={<ForkOutlined />} onClick={() => openGraphExplore()}>
+              图谱探索
             </Button>
           </Space>
         </div>
@@ -1076,6 +1123,11 @@ function FusionCockpitPage() {
                         连线粗细 = 交互强度 · 点击节点/连线查看明细
                       </Text>
                     </Space>
+                    {graphOption ? (
+                      <Button type="link" size="small" icon={<ForkOutlined />} onClick={() => openGraphExplore()}>
+                        深入探索
+                      </Button>
+                    ) : null}
                   </div>
                   {graphOption ? (
                     <ReactECharts

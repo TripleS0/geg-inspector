@@ -29,6 +29,7 @@ from app.application.case_use_cases import CaseUseCase
 from app.application.fusion_use_cases import FusionUseCase
 from app.application.risk_config_use_cases import RiskConfigUseCase
 from app.application.bootstrap import bootstrap_database
+from app.application.data_center_use_cases import DataCenterUseCase
 from app.application.dataset_use_cases import DatasetUseCase
 from app.application.export_use_cases import ExportUseCase
 from app.application.bank_ocr_use_cases import BankOcrUseCase
@@ -191,6 +192,26 @@ class WechatAnalysisFilterRequest(BaseModel):
         )
 
 
+class GraphExploreAnchorPayload(BaseModel):
+    """Graph exploration anchor."""
+
+    type: str = "person"
+    value: str
+
+
+class GraphExplorePayload(BaseModel):
+    """Graph exploration request payload."""
+
+    anchors: List[GraphExploreAnchorPayload] = Field(default_factory=list)
+    display_level: int = Field(default=2, ge=1, le=10)
+    unlimited: bool = False
+    relation_types: List[str] = Field(default_factory=list)
+    min_weight: int = Field(default=1, ge=1, le=100)
+    max_nodes: int = Field(default=500, ge=1, le=1000)
+    max_edges: int = Field(default=1500, ge=1, le=3000)
+    include_sample_records: bool = True
+
+
 class TelecomAnalysisFilterRequest(BaseModel):
     """Telecom CDR analysis filter payload."""
 
@@ -296,6 +317,25 @@ class PersonLinkCandidatePayload(BaseModel):
 class ManualLinkPayload(BaseModel):
     identifier_type: str
     identifier_value: str
+
+
+class FusionModelUpdateItem(BaseModel):
+    model_key: str
+    enabled: bool = True
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class FusionModelSavePayload(BaseModel):
+    items: List[FusionModelUpdateItem] = Field(default_factory=list)
+
+
+class DataCenterRecordDeleteItem(BaseModel):
+    record_kind: str
+    record_id: int
+
+
+class DataCenterDeletePayload(BaseModel):
+    items: List[DataCenterRecordDeleteItem] = Field(default_factory=list)
 
 
 class QichachaExportRowsBody(BaseModel):
@@ -1121,6 +1161,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="案件不存在")
         return FusionUseCase().suggest_anchors(case_id, q, limit=limit, anchor_type=type)
 
+    @app.post("/api/cases/{case_id}/graph/explore")
+    def case_graph_explore(case_id: int, payload: GraphExplorePayload) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            return FusionUseCase().explore_graph(case_id, data)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
     @app.get("/api/cases/{case_id}/records/detail")
     def case_record_detail(case_id: int, ref: str = Query(...)) -> Dict[str, Any]:
         if CaseUseCase().get_case(case_id) is None:
@@ -1129,6 +1179,75 @@ def create_app() -> FastAPI:
             return FusionUseCase().record_detail(ref)
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/cases/{case_id}/fusion/models")
+    def list_fusion_models(case_id: int) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        return FusionUseCase().list_fusion_models(case_id)
+
+    @app.put("/api/cases/{case_id}/fusion/models")
+    def save_fusion_models(case_id: int, payload: FusionModelSavePayload) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        updates = [
+            {"model_key": item.model_key, "enabled": item.enabled, "params": item.params}
+            for item in payload.items
+        ]
+        return FusionUseCase().save_fusion_models(case_id, updates)
+
+    @app.get("/api/cases/{case_id}/fusion/events")
+    def scan_fusion_events(
+        case_id: int,
+        start_date: str = Query(default=""),
+        end_date: str = Query(default=""),
+        keyword: str = Query(default=""),
+        event_type: str = Query(default=""),
+    ) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            return FusionUseCase().scan_fusion_events(
+                case_id,
+                start_date=start_date,
+                end_date=end_date,
+                keyword=keyword,
+                event_type=event_type,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/data-center/records")
+    def data_center_records(
+        case_id: Optional[int] = Query(default=None),
+        batch_id: Optional[str] = Query(default=None),
+        source_type: Optional[str] = Query(default=None),
+        keyword: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> Dict[str, Any]:
+        return DataCenterUseCase().list_records(
+            case_id=case_id,
+            batch_id=batch_id,
+            source_type=source_type,
+            keyword=keyword,
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.delete("/api/data-center/records")
+    def data_center_delete_records(payload: DataCenterDeletePayload) -> Dict[str, int]:
+        try:
+            items = [item.model_dump() for item in payload.items]
+            return DataCenterUseCase().delete_records(items)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.get("/api/data-center/dashboard")
+    def data_center_dashboard(
+        case_id: Optional[int] = Query(default=None),
+    ) -> Dict[str, Any]:
+        return DataCenterUseCase().get_dashboard(case_id)
 
     @app.get("/api/tables")
     def list_tables() -> Dict[str, Any]:

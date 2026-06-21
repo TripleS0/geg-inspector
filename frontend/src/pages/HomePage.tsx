@@ -9,7 +9,6 @@ import {
   PartitionOutlined,
   PhoneOutlined,
   ProjectOutlined,
-  TeamOutlined,
   WechatOutlined,
 } from "@ant-design/icons";
 import { Link, useNavigate } from "react-router-dom";
@@ -31,12 +30,12 @@ const SOURCE_LABELS: Record<string, string> = {
   telecom: "通讯",
 };
 
-const ANALYSIS_ENTRIES: Array<{ to: string; title: string; desc: string; icon: ReactNode }> = [
-  { to: "/fusion-cockpit", title: "融合驾驶舱", desc: "单人全景、双人关系与跨源记录溯源", icon: <PartitionOutlined /> },
-  { to: "/bank", title: "银行流水分析", desc: "大额、特殊金额、特殊时间资金线索", icon: <BankOutlined /> },
-  { to: "/wechat-analysis", title: "微信流水分析", desc: "转账流水、收支类型与交易对手统计", icon: <WechatOutlined /> },
-  { to: "/telecom-analysis", title: "通讯话单分析", desc: "通联频次、时长、时段与号码关系", icon: <PhoneOutlined /> },
-  { to: "/commercial-analysis", title: "商务网分析", desc: "询价、中标、供应商与资金关联", icon: <LineChartOutlined /> },
+const ANALYSIS_ENTRIES: Array<{ to: string; title: string; desc: string; icon: ReactNode; featured?: boolean }> = [
+  { to: "/fusion-cockpit", title: "融合分析驾驶舱", desc: "综合研判与关系图谱探索，单人全景、双人关系与多层关联分析", icon: <PartitionOutlined />, featured: true },
+  { to: "/bank", title: "资金往来分析", desc: "大额、特殊金额、特殊时间资金线索", icon: <BankOutlined /> },
+  { to: "/wechat-analysis", title: "微信流水分析", desc: "分析微信转账流水与交易对手关系", icon: <WechatOutlined /> },
+  { to: "/telecom-analysis", title: "通讯记录分析", desc: "通联频次、时长、时段与号码关系", icon: <PhoneOutlined /> },
+  { to: "/commercial-analysis", title: "商务数据分析", desc: "询价、中标、供应商与资金关联", icon: <LineChartOutlined /> },
 ];
 
 function formatTime(value?: string) {
@@ -121,14 +120,12 @@ function HomePage({ health }: HomePageProps) {
             当前进展来自真实案件、批次和人物关联数据；系统会自动推荐下一步，不再依赖固定写死的流程状态。
           </Paragraph>
           <Space wrap className="workspace-actions">
+            <Button type="primary" size="large" icon={<PartitionOutlined />} onClick={() => navigate(selectedCase ? `/fusion-cockpit?case=${selectedCase.case_id}&view=analysis&tab=open` : "/fusion-cockpit")}>融合分析驾驶舱</Button>
             {nextStep ? (
-              <Button type="primary" size="large" icon={nextStep.icon} onClick={() => navigate(nextStep.to)} disabled={nextStep.disabled}>
+              <Button type="link" size="large" icon={nextStep.icon} onClick={() => navigate(nextStep.to)} disabled={nextStep.disabled}>
                 下一步：{nextStep.title}
               </Button>
-            ) : (
-              <Button type="primary" size="large" icon={<PartitionOutlined />} onClick={() => navigate("/fusion-cockpit")}>进入融合驾驶舱</Button>
-            )}
-            <Button size="large" icon={<PartitionOutlined />} onClick={() => navigate(selectedCase ? `/fusion-cockpit?case=${selectedCase.case_id}` : "/fusion-cockpit")}>查看分析结果</Button>
+            ) : null}
           </Space>
         </div>
         <div className="next-step-panel">
@@ -187,11 +184,29 @@ function HomePage({ health }: HomePageProps) {
 
       <div className="app-card" style={{ marginTop: 16 }}>
         <div className="section-heading">
-          <div><Title level={4}>快捷分析</Title><Paragraph>高频研判入口。若还没完成前置步骤，建议先按上方流程推进。</Paragraph></div>
+          <div><Title level={4}>融合分析驾驶舱</Title><Paragraph>综合研判与关系图谱统一入口，从驾驶舱内进入图谱探索。</Paragraph></div>
         </div>
         <Row gutter={[16, 16]}>
-          {ANALYSIS_ENTRIES.map((entry) => (
-            <Col xs={24} sm={12} xl={8} key={entry.to}>
+          {ANALYSIS_ENTRIES.filter((entry) => entry.featured).map((entry) => (
+            <Col xs={24} md={12} key={entry.to}>
+              <Link to={entry.to}>
+                <div className="quick-card compact-analysis-card featured-analysis-card">
+                  <span className="quick-icon">{entry.icon}</span>
+                  <div><Title level={5}>{entry.title}</Title><Paragraph>{entry.desc}</Paragraph></div>
+                </div>
+              </Link>
+            </Col>
+          ))}
+        </Row>
+      </div>
+
+      <div className="app-card" style={{ marginTop: 16 }}>
+        <div className="section-heading">
+          <div><Title level={4}>专题分析</Title><Paragraph>资金往来、微信流水、通讯记录与商务数据分析入口。</Paragraph></div>
+        </div>
+        <Row gutter={[16, 16]}>
+          {ANALYSIS_ENTRIES.filter((entry) => !entry.featured).map((entry) => (
+            <Col xs={24} sm={12} xl={6} key={entry.to}>
               <Link to={entry.to}>
                 <div className="quick-card compact-analysis-card">
                   <span className="quick-icon">{entry.icon}</span>

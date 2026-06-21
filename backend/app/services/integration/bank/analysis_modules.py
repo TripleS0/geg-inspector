@@ -304,16 +304,16 @@ def build_custom_filter_analysis_remark(
     return _join_remark(parts)
 
 
-def run_module(
-    import_batch_id: str,
+def run_module_on_records(
+    all_records: list[dict[str, str]],
     module_id: str,
     params: ModuleParams | None = None,
+    *,
     client: SqliteClient | None = None,
 ) -> ModuleResult:
-    """Load batch unified records, apply module rules, summarize and build description."""
+    """Apply module rules to pre-loaded unified transaction records."""
     params = params or ModuleParams()
     query = BankQueryService(client)
-    all_records = query.query_unified_records(import_batch_id, None)
     extra: dict[str, Any] = {}
     hit_records: list[dict[str, str]] = []
 
@@ -385,6 +385,19 @@ def run_module(
         extra=extra,
         description=description,
     )
+
+
+def run_module(
+    import_batch_id: str,
+    module_id: str,
+    params: ModuleParams | None = None,
+    client: SqliteClient | None = None,
+) -> ModuleResult:
+    """Load batch unified records, apply module rules, summarize and build description."""
+    params = params or ModuleParams()
+    query = BankQueryService(client)
+    all_records = query.query_unified_records(import_batch_id, None)
+    return run_module_on_records(all_records, module_id, params, client=client)
 
 
 def render_module_description(
