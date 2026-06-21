@@ -70,7 +70,7 @@ data/
 
 ## 备份与迁移
 
-备份或迁移时，复制整个 `data/` 目录即可。建议定期备份 `data/data/datafusionx.sqlite3`。
+备份或迁移时，复制整个 `data/` 目录即可。建议定期备份 `data/data/geg-inspector.sqlite3`。
 
 ## 企查查配置（可选）
 

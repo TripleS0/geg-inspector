@@ -30,7 +30,9 @@ geg-inspector 是一个面向本地化、离线化数据治理场景的数据整
 - **离线运行**：默认使用本地 SQLite 文件数据库，部署后不依赖外部数据库、中间件或云服务。
 - **多源数据接入**：支持银行流水、工商主体、商务网询价、微信转账、通信话单等数据源。
 - **统一数据治理**：围绕案件、批次、数据集、字段映射、标准化表进行统一管理。
-- **关系融合分析**：支持跨数据源识别人员、手机号、账号、企业等关键标识，并进行自动关联。
+- **关系融合分析**：支持跨数据源识别人员、手机号、账号、企业等关键标识，并进行自动关联与人像归并。
+- **融合研判中枢**：融合分析驾驶舱、多层关系图探索、风险事件扫描与研判模型配置。
+- **数据中心看板**：全库数据概览、趋势图表、关联人物排名与跨批次记录治理。
 - **银行 OCR 辅助录入**：支持银行流水图片或 PDF OCR、版式解析、人工校对与入库。
 - **风险识别与报告导出**：支持商务网风险规则识别、银行流水分析、通信/微信数据分析与结果导出。
 - **Docker 一键部署**：前端 nginx 与后端 FastAPI 容器化部署，启动脚本适配 Windows、macOS 和 Linux。
@@ -80,13 +82,23 @@ geg-inspector 是一个面向本地化、离线化数据治理场景的数据整
 - 支持通信话单导入、运营商模板识别、号码标准化、通联统计与导出。
 - 支持与其他数据源进行人员、手机号、企业等标识融合。
 
-### 7. 多源数据融合
+### 7. 多源数据融合与研判中心
 
 - 自动发现多数据源中的关键标识，如姓名、手机号、账号、企业名称等。
-- 对不同来源数据进行实体关联。
-- 支持人员关联、记录详情查看、融合查询和综合驾驶舱展示。
+- 对不同来源数据进行实体关联与人像归并（人物关系专题）。
+- 融合分析驾驶舱：单人全景、双人关系、标识符自由检索与记录详情抽屉。
+- 关系图探索：多层扩张、路径发现、关系过滤与观测状态本地持久化。
+- 事件管理：按已启用研判模型扫描案件数据，展示大额转账、围标等触发事件。
+- 模型管理：配置银行流水、微信转账、商务网与围串标风险模型的启用与参数。
+- 案件工作流：新建案件、打开案件、导出案件与案件批次维护。
 
-### 8. 数据脱敏
+### 8. 数据中心
+
+- 数据看板：全库/按案件的数据概览、来源分布、趋势图表与关联人物排名。
+- 数据管理：跨批次记录查询、筛选与批量删除，支持案件与批次维度治理。
+- 与案件、批次、数据表浏览等数据管理入口协同，形成统一数据底座视图。
+
+### 9. 数据脱敏
 
 - 支持对常见文件进行敏感字段脱敏处理。
 - 支持文件或文件夹级处理。
@@ -196,6 +208,7 @@ geg-inspector/
 │       │   ├── case_use_cases.py          # 案件管理用例
 │       │   ├── dataset_use_cases.py       # 数据集、批次、表预览用例
 │       │   ├── export_use_cases.py        # 导出用例
+│       │   ├── data_center_use_cases.py   # 数据中心看板与记录治理用例
 │       │   ├── fusion_use_cases.py        # 多源融合用例
 │       │   ├── import_use_cases.py        # 文件导入与标准化用例
 │       │   ├── risk_config_use_cases.py   # 风险规则配置用例
@@ -205,8 +218,9 @@ geg-inspector/
 │       │   └── sql/                       # SQLite/PostgreSQL 初始化脚本
 │       └── services/                     # 领域服务层
 │           ├── bank_ocr/                  # 银行流水 OCR、图片预处理、PDF 转换、表格解析
+│           ├── data_center/               # 数据中心看板统计与记录治理
 │           ├── desensitization/           # 数据脱敏服务
-│           ├── fusion/                    # 标识发现、自动关联、人员链接、融合查询
+│           ├── fusion/                    # 标识发现、自动关联、图探索、事件与模型管理
 │           ├── integration/               # 各数据源集成服务
 │           │   ├── bank/                  # 银行流水模板、导入、映射、查询、分析、导出
 │           │   ├── commercial/            # 商务网询价、工商主体、风险规则、导出
@@ -231,13 +245,18 @@ geg-inspector/
 │       ├── styles.css                    # 全局样式
 │       ├── components/                   # 复用组件
 │       │   ├── AnalysisDateTimeFilters.tsx # 分析时间筛选组件
-│       │   └── WorkflowGuide.tsx          # 工作流引导组件
+│       │   ├── WorkflowGuide.tsx          # 工作流引导组件
+│       │   ├── data-import/               # 数据导入表单与辅助逻辑
+│       │   └── fusion/                    # 融合研判、事件/模型、人像关联等面板
+│       ├── utils/                        # 图探索观测存储、记录解析等工具
 │       └── pages/                        # 业务页面
 │           ├── HomePage.tsx              # 首页/导航页
 │           ├── CaseManagePage.tsx        # 案件管理
-│           ├── ImportPage.tsx            # 文件导入
+│           ├── ImportPage.tsx            # 数据导入入口
 │           ├── BatchesPage.tsx           # 批次管理
 │           ├── TablesPage.tsx            # 数据表浏览
+│           ├── DataDashboardPage.tsx     # 数据中心 · 数据看板
+│           ├── DataManagePage.tsx        # 数据中心 · 数据管理
 │           ├── BankAnalysisPage.tsx      # 银行流水分析
 │           ├── BankTemplatesPage.tsx     # 银行模板管理
 │           ├── BankOcrProofreadPage.tsx  # 银行 OCR 校对
@@ -246,8 +265,10 @@ geg-inspector/
 │           ├── QichachaIcPage.tsx        # 企查查/工商信息页面
 │           ├── TelecomAnalysisPage.tsx   # 通信话单分析
 │           ├── WechatAnalysisPage.tsx    # 微信转账分析
-│           ├── FusionCockpitPage.tsx     # 多源融合驾驶舱
-│           ├── PersonLinkingPage.tsx     # 人员关联分析
+│           ├── FusionAnalysisHubPage.tsx # 研判中心 · 融合分析中枢
+│           ├── FusionCockpitPage.tsx     # 融合分析驾驶舱
+│           ├── GraphExplorePage.tsx      # 关系图探索
+│           ├── PersonLinkingPage.tsx     # 人物关系 · 人像归并
 │           └── DesensitizationPage.tsx   # 数据脱敏
 │
 ├── mock-data/                            # 演示数据
@@ -418,7 +439,7 @@ volumes:
 Docker 模式下默认路径：
 
 ```text
-/data/data/datafusionx.sqlite3
+/data/data/geg-inspector.sqlite3
 /data/data/uploads/
 /data/exports/
 /data/logs/
@@ -427,10 +448,10 @@ Docker 模式下默认路径：
 对应到宿主机项目目录：
 
 ```text
-./data/data/datafusionx.sqlite3
-./data/data/uploads/
-./data/exports/
-./data/logs/
+./data/geg-inspector.sqlite3
+./data/uploads/
+./exports/
+./logs/
 ```
 
 ---
@@ -540,7 +561,7 @@ python scripts/import_mock_data.py
 开发模式下，默认运行数据位于项目根目录：
 
 ```text
-data/datafusionx.sqlite3
+data/geg-inspector.sqlite3
 data/uploads/
 exports/
 logs/
@@ -549,7 +570,7 @@ logs/
 Docker 模式下，`GEG_INSPECTOR_HOME=/data`，对应容器内路径：
 
 ```text
-/data/data/datafusionx.sqlite3
+/data/data/geg-inspector.sqlite3
 /data/data/uploads/
 /data/exports/
 /data/logs/
@@ -560,7 +581,7 @@ Docker 模式下，`GEG_INSPECTOR_HOME=/data`，对应容器内路径：
 | 环境变量 | 说明 | 示例 |
 | --- | --- | --- |
 | `DATAFUSIONX_HOME` | 指定运行数据根目录 | `/data` |
-| `GEG_INSPECTOR_DB_PATH` | 指定 SQLite 数据库文件路径，优先级最高 | `/data/datafusionx.sqlite3` |
+| `GEG_INSPECTOR_DB_PATH` | 指定 SQLite 数据库文件路径，优先级最高 | `/data/data/geg-inspector.sqlite3` |
 | `GEG_INSPECTOR_HOST` | 后端监听地址 | `0.0.0.0` |
 | `GEG_INSPECTOR_BACKEND_PORT` | 后端监听端口 | `8765` |
 | `QICHACHA_APP_KEY` | 企查查 AppKey | `your_app_key` |
@@ -569,7 +590,7 @@ Docker 模式下，`GEG_INSPECTOR_HOME=/data`，对应容器内路径：
 数据库路径优先级：
 
 ```text
-DATAFUSIONX_DB_PATH > DATAFUSIONX_HOME/data/datafusionx.sqlite3 > 项目根目录/data/datafusionx.sqlite3
+GEG_INSPECTOR_DB_PATH / DATAFUSIONX_DB_PATH > GEG_INSPECTOR_HOME/data/geg-inspector.sqlite3 > 项目根目录/data/geg-inspector.sqlite3
 ```
 
 ### 数据备份建议
