@@ -120,7 +120,7 @@ function HomePage({ health }: HomePageProps) {
             当前进展来自真实案件、批次和人物关联数据；系统会自动推荐下一步，不再依赖固定写死的流程状态。
           </Paragraph>
           <Space wrap className="workspace-actions">
-            <Button type="primary" size="large" icon={<PartitionOutlined />} onClick={() => navigate(selectedCase ? `/fusion-cockpit?case=${selectedCase.case_id}&view=analysis&tab=open` : "/fusion-cockpit")}>融合分析驾驶舱</Button>
+            <Button type="primary" size="large" icon={<PartitionOutlined />} onClick={() => navigate(selectedCase ? `/fusion-cockpit?case=${selectedCase.case_id}` : "/fusion-cockpit")}>融合分析驾驶舱</Button>
             {nextStep ? (
               <Button type="link" size="large" icon={nextStep.icon} onClick={() => navigate(nextStep.to)} disabled={nextStep.disabled}>
                 下一步：{nextStep.title}

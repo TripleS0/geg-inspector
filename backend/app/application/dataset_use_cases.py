@@ -170,7 +170,7 @@ class DatasetUseCase:
         return merged[:lim]
 
     def resolve_batch_kind(self, import_batch_id: str) -> Optional[str]:
-        """识别批次类型：bank / commercial / enterprise，不存在则 None。"""
+        """识别批次类型：bank / commercial / wechat / telecom / enterprise，不存在则 None。"""
         bid = (import_batch_id or "").strip()
         if not bid:
             return None

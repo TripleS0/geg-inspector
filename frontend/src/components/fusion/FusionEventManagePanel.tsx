@@ -16,7 +16,7 @@ import {
   Typography,
   message,
 } from "antd";
-import { ReloadOutlined, SearchOutlined, UnorderedListOutlined } from "@ant-design/icons";
+import { SearchOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import type { Dayjs } from "dayjs";
 import { api, FusionEventItem } from "../../api";
 
@@ -134,9 +134,6 @@ function FusionEventManagePanel({ caseId, caseName }: FusionEventManagePanelProp
               {caseName ? ` 当前案件：${caseName}` : ""}
             </Paragraph>
           </div>
-          <Button type="primary" icon={<ReloadOutlined />} loading={loading} onClick={() => void runScan()}>
-            重新扫描
-          </Button>
         </div>
 
         <div className="fusion-event-filters">

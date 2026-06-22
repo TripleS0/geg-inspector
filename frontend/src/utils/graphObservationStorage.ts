@@ -1,6 +1,6 @@
-import type { FusionRecord, GraphExploreEdge, GraphExploreNode } from "../api";
+import type { FusionRecord, GraphExploreEdge, GraphExploreNode, GraphExplorePath } from "../api";
 
-export type GraphObservationKind = "node" | "edge";
+export type GraphObservationKind = "node" | "edge" | "path";
 
 export interface GraphObservationItem {
   key: string;
@@ -11,6 +11,9 @@ export interface GraphObservationItem {
   addedAt: string;
   node?: GraphExploreNode;
   edge?: GraphExploreEdge;
+  path?: GraphExplorePath;
+  pathNodes?: GraphExploreNode[];
+  pathEdges?: GraphExploreEdge[];
   records?: FusionRecord[];
 }
 
@@ -50,6 +53,29 @@ export function createNodeObservation(node: GraphExploreNode, records: FusionRec
     subLabel: `${node.display_type} · 第 ${node.depth + 1} 级 · ${node.degree} 条关系`,
     addedAt: new Date().toISOString(),
     node,
+    records,
+  };
+}
+
+export function createPathObservation(
+  path: GraphExplorePath,
+  nodes: GraphExploreNode[],
+  edges: GraphExploreEdge[],
+  records: FusionRecord[] = []
+): GraphObservationItem {
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const pathNodes = path.nodes.map((id) => nodeMap.get(id)).filter(Boolean) as GraphExploreNode[];
+  const label = pathNodes.map((node) => node.label).join(" → ") || "A-B 路径";
+  return {
+    key: buildObservationKey("path", path.id),
+    kind: "path",
+    refId: path.id,
+    label,
+    subLabel: `${path.length} 跳 · ${path.edges.length} 条关系 · ${pathNodes.length} 个节点`,
+    addedAt: new Date().toISOString(),
+    path,
+    pathNodes,
+    pathEdges: edges,
     records,
   };
 }

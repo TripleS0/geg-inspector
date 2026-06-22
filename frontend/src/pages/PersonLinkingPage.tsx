@@ -94,7 +94,7 @@ function PersonLinkingPage() {
             <Button
               type="primary"
               ghost
-              onClick={() => navigate(`/fusion-cockpit?case=${caseId || ""}&view=analysis&tab=open`)}
+              onClick={() => navigate(`/fusion-cockpit?case=${caseId || ""}`)}
               disabled={!caseId}
             >
               融合驾驶舱
@@ -106,7 +106,7 @@ function PersonLinkingPage() {
         <PersonLinkingPanel
           caseId={caseId}
           onStatsChange={setStats}
-          onEnterCockpit={() => navigate(`/fusion-cockpit?case=${caseId}&view=analysis&tab=open`)}
+          onEnterCockpit={() => navigate(`/fusion-cockpit?case=${caseId}`)}
         />
       ) : null}
     </div>

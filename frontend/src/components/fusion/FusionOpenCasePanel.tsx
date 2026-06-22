@@ -20,7 +20,7 @@ function FusionOpenCasePanel({ cases, loading, currentCaseId, onOpen, onRefresh,
         <div>
           <Title level={4} style={{ marginBottom: 4 }}>打开案件</Title>
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            选择已有案件并进入融合分析驾驶舱，开始综合研判与图谱探索。
+            选择已有案件，进入融合分析驾驶舱。
           </Paragraph>
         </div>
         <Button onClick={onRefresh}>刷新列表</Button>

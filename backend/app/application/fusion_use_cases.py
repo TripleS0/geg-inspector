@@ -174,6 +174,9 @@ class FusionUseCase:
     def explore_graph(self, case_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self._graph_explore.explore(case_id, payload)
 
+    def graph_selection_detail(self, case_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._graph_explore.selection_detail(case_id, payload)
+
     def record_detail(self, source_ref_json: str) -> dict[str, Any]:
         try:
             source_ref = json.loads(source_ref_json)

@@ -16,8 +16,8 @@ from app.services.integration.telecom.phone_utils import normalize_phone
 from app.services.shared.db.sqlite_client import SqliteClient
 
 RELATION_LABELS = {
-    "bank_txn": "资金关系",
-    "wechat": "微信关系",
+    "bank_txn": "银行关系",
+    "wechat": "微信转账关系",
     "telecom": "通讯关系",
     "enterprise": "工商关系",
     "commercial": "商务关系",
@@ -34,6 +34,23 @@ NODE_LABELS = {
     "unknown": "其他",
 }
 
+IDENTIFIER_LABELS = {
+    "phone": "手机号",
+    "bank_card": "银行卡",
+    "bank_acct": "银行账号",
+    "wechat_name": "微信名",
+    "enterprise_name": "企业名称",
+    "person_name": "姓名",
+}
+
+EDGE_RECORD_TYPES = {
+    "bank_txn": "bank_txn",
+    "wechat": "wechat",
+    "telecom": "telecom",
+    "enterprise": "enterprise",
+    "commercial": "commercial",
+}
+
 DEFAULT_RELATION_TYPES = set(RELATION_LABELS)
 
 
@@ -47,6 +64,7 @@ class ExploreNode:
     anchor_index: int | None = None
     degree: int = 0
     stats: dict[str, int] = field(default_factory=dict)
+    identifiers: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -86,7 +104,30 @@ class GraphExploreService:
         min_weight = max(1, int(payload.get("min_weight") or 1))
         include_sample_records = bool(payload.get("include_sample_records", True))
 
-        all_nodes, all_edges = self._build_case_graph(case_id, relation_types, include_sample_records)
+        batch_ids = self._case_batch_ids(case_id)
+        if not batch_ids:
+            return {
+                "case_id": case_id,
+                "anchors": [],
+                "display_level": display_level,
+                "unlimited": unlimited,
+                "truncated": False,
+                "truncated_reason": "该案件尚未绑定数据批次，无法构建关系图谱",
+                "nodes": [],
+                "edges": [],
+                "paths": [],
+                "common_neighbors": [],
+                "summary": {
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "path_count": 0,
+                    "common_neighbor_count": 0,
+                    "relation_type_counts": {},
+                    "depth_counts": {},
+                },
+            }
+
+        all_nodes, all_edges = self._build_case_graph(case_id, relation_types, include_sample_records, batch_ids)
         anchor_ids = [self._resolve_anchor(case_id, item, all_nodes) for item in anchors_payload[:2]]
         anchor_ids = [node_id for node_id in anchor_ids if node_id]
         if not anchor_ids:
@@ -157,6 +198,7 @@ class GraphExploreService:
         nodes_payload = []
         for node in visible_nodes.values():
             node.degree = sum(1 for edge in visible_edges.values() if edge.source == node.id or edge.target == node.id)
+            node.identifiers = self._resolve_node_identifiers(case_id, node.id, node.label)
             item = asdict(node)
             item["display_type"] = NODE_LABELS.get(node.type, node.type)
             nodes_payload.append(item)
@@ -190,26 +232,102 @@ class GraphExploreService:
             },
         }
 
+    def selection_detail(self, case_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return full records, identifiers and chart stats for a graph node or edge."""
+        kind = str(payload.get("kind") or "").strip()
+        date_from = str(payload.get("date_from") or "").strip()
+        date_to = str(payload.get("date_to") or "").strip()
+        batch_ids = self._case_batch_ids(case_id)
+        if not batch_ids:
+            raise ValueError("该案件尚未绑定数据批次")
+
+        if kind == "node":
+            node_id = str(payload.get("node_id") or "").strip()
+            if not node_id:
+                raise ValueError("缺少 node_id")
+            identifiers = self._resolve_node_identifiers(case_id, node_id)
+            label = self._node_display_label(case_id, node_id)
+            ids = self._ids_for_node(case_id, node_id)
+            records = self._fusion._collect_records(batch_ids, ids)
+            records = self._filter_records_by_date(records, date_from, date_to)
+            kpis = self._fusion._build_kpis(records)
+            charts = self._fusion._build_person_charts(case_id, records, label)
+            return {
+                "kind": "node",
+                "label": label,
+                "identifiers": identifiers,
+                "records": [asdict(rec) for rec in records],
+                "charts": charts,
+                "kpis": kpis,
+            }
+
+        if kind == "edge":
+            source = str(payload.get("source") or "").strip()
+            target = str(payload.get("target") or "").strip()
+            edge_type = str(payload.get("edge_type") or "").strip()
+            if not source or not target:
+                raise ValueError("缺少 source 或 target")
+            label_a = self._node_display_label(case_id, source)
+            label_b = self._node_display_label(case_id, target)
+            ids_a = self._ids_for_node(case_id, source)
+            ids_b = self._ids_for_node(case_id, target)
+            records_a = self._fusion._collect_records(batch_ids, ids_a)
+            records_b = self._fusion._collect_records(batch_ids, ids_b)
+            records = self._fusion._direct_relation_records(records_a, records_b, ids_a, ids_b, label_a, label_b)
+            record_type = EDGE_RECORD_TYPES.get(edge_type)
+            if record_type:
+                records = [rec for rec in records if rec.record_type == record_type]
+            records = self._filter_records_by_date(records, date_from, date_to)
+            kpis = self._fusion._build_kpis(records)
+            charts = self._fusion._build_relation_charts(records, label_a, label_b, [])
+            return {
+                "kind": "edge",
+                "label": f"{label_a} → {label_b}",
+                "identifiers": [],
+                "records": [asdict(rec) for rec in records],
+                "charts": charts,
+                "kpis": kpis,
+            }
+
+        raise ValueError("kind 须为 node 或 edge")
+
     def _build_case_graph(
         self,
         case_id: int,
         relation_types: set[str],
         include_sample_records: bool,
+        batch_ids: list[str] | None = None,
     ) -> tuple[dict[str, ExploreNode], dict[str, ExploreEdge]]:
         nodes: dict[str, ExploreNode] = {}
         edges: dict[str, ExploreEdge] = {}
+        scoped_batch_ids = batch_ids if batch_ids is not None else self._case_batch_ids(case_id)
+        if not scoped_batch_ids:
+            return nodes, edges
+
         persons = self._person_links.list_persons(case_id)
         person_by_name: dict[str, str] = {}
         person_by_identifier: dict[tuple[str, str], str] = {}
+        phone_to_person: dict[str, str] = {}
 
         def add_node(node_id: str, label: str, node_type: str) -> None:
             if node_id not in nodes:
                 nodes[node_id] = ExploreNode(id=node_id, label=label or node_id, type=node_type)
 
+        def resolve_phone_node(phone_norm: str) -> str:
+            if not phone_norm:
+                return ""
+            person_id = phone_to_person.get(phone_norm) or person_by_identifier.get(("phone", phone_norm))
+            if person_id:
+                return person_id
+            node_id = f"phone:{phone_norm}"
+            add_node(node_id, phone_norm, "phone")
+            return node_id
+
         def add_edge(source: str, target: str, relation_type: str, *, amount: float | None = None, duration: float | None = None, record: dict[str, Any] | None = None) -> None:
             if relation_type not in relation_types or not source or not target or source == target:
                 return
-            a, b = sorted([source, target]) if relation_type in {"identifier", "enterprise", "commercial"} else [source, target]
+            undirected = relation_type in {"identifier", "enterprise", "commercial", "bank_txn", "wechat", "telecom"}
+            a, b = sorted([source, target]) if undirected else [source, target]
             edge_id = f"{relation_type}:{a}:{b}"
             edge = edges.get(edge_id)
             if edge is None:
@@ -247,13 +365,14 @@ class GraphExploreService:
                 add_node(node_id, value, ntype)
                 add_edge(person_id, node_id, "identifier")
 
-        batch_ids = self._case_batch_ids(case_id)
-        for batch_id in batch_ids:
-            source_type = self._batch_source_type(batch_id)
+        phone_to_person.update(self._build_phone_person_map(case_id, scoped_batch_ids, person_by_name, person_by_identifier))
+
+        for batch_id in scoped_batch_ids:
+            source_type = self._fusion._batch_source_type(batch_id)
             if source_type == "bank" and "bank_txn" in relation_types:
                 self._add_bank_edges(batch_id, nodes, add_node, add_edge, person_by_name, person_by_identifier)
             elif source_type == "telecom" and "telecom" in relation_types:
-                self._add_raw_pair_edges(batch_id, "telecom", nodes, add_node, add_edge, person_by_identifier)
+                self._add_raw_pair_edges(batch_id, "telecom", add_node, add_edge, resolve_phone_node, phone_to_person, person_by_name)
             elif source_type == "wechat" and "wechat" in relation_types:
                 self._add_wechat_edges(batch_id, nodes, add_node, add_edge, person_by_name, person_by_identifier)
             elif source_type == "enterprise" and "enterprise" in relation_types:
@@ -271,32 +390,46 @@ class GraphExploreService:
             left = self._person_or_bank(str(row[1] or ""), str(row[2] or ""), person_by_name, person_by_identifier, add_node)
             right = self._person_or_bank(str(row[6] or ""), str(row[7] or ""), person_by_name, person_by_identifier, add_node)
             amount = self._to_float(row[4])
-            record = {"record_type": "bank_txn", "time": str(row[3] or ""), "summary": str(row[8] or ""), "amount": amount, "source_ref": {"layer": "std", "table": "std_bank_txn", "pk": {"std_id": int(row[0])}, "batch_id": batch_id}}
+            counterparty = str(row[6] or row[7] or "")
+            record = {"record_type": "bank_txn", "time": str(row[3] or ""), "summary": str(row[8] or ""), "amount": amount, "counterparty": counterparty, "source_ref": {"layer": "std", "table": "std_bank_txn", "pk": {"std_id": int(row[0])}, "batch_id": batch_id}}
             add_edge(left, right, "bank_txn", amount=amount, record=record)
 
     def _add_wechat_edges(self, batch_id: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any, person_by_name: dict[str, str], person_by_identifier: dict[tuple[str, str], str]) -> None:
-        for table, raw_id, fields in self._iter_raw_rows(batch_id, "wechat"):
-            user = fields.get("用户侧账号名称") or fields.get("用户侧账户名称") or ""
-            peer = fields.get("对手侧账户名称") or fields.get("对手方账户名称") or ""
+        for table, raw_id, fields in self._fusion._iter_raw_rows(batch_id, "wechat"):
+            user = self._fusion._raw_field(fields, "用户侧账号名称", "用户侧账户名称")
+            peer = self._fusion._raw_field(fields, "对手侧账户名称", "对手方账户名称")
             left = self._person_or_wechat(user, person_by_name, person_by_identifier, add_node)
             right = self._person_or_wechat(peer, person_by_name, person_by_identifier, add_node)
-            amount_fen = self._to_float(fields.get("交易金额(分)") or fields.get("交易金额（分）") or fields.get("交易金额_分"))
+            amount_fen = self._to_float(self._fusion._raw_field(fields, "交易金额(分)", "交易金额（分）", "交易金额_分"))
             amount = amount_fen / 100.0 if amount_fen is not None else None
-            record = {"record_type": "wechat", "time": fields.get("交易时间") or "", "summary": fields.get("交易业务类型") or "", "amount": amount, "source_ref": {"layer": "raw", "table": table, "pk": {"raw_id": raw_id}, "batch_id": batch_id}}
+            record = {"record_type": "wechat", "time": self._fusion._raw_field(fields, "交易时间") or "", "summary": self._fusion._raw_field(fields, "交易业务类型") or "", "amount": amount, "counterparty": peer, "source_ref": {"layer": "raw", "table": table, "pk": {"raw_id": raw_id}, "batch_id": batch_id}}
             add_edge(left, right, "wechat", amount=amount, record=record)
 
-    def _add_raw_pair_edges(self, batch_id: str, source_type: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any, person_by_identifier: dict[tuple[str, str], str]) -> None:
-        for table, raw_id, fields in self._iter_raw_rows(batch_id, source_type):
-            local = normalize_phone(str(fields.get("本机号码") or ""))
-            peer = normalize_phone(str(fields.get("对方号码") or ""))
+    def _add_raw_pair_edges(
+        self,
+        batch_id: str,
+        source_type: str,
+        add_node: Any,
+        add_edge: Any,
+        resolve_phone_node: Any,
+        phone_to_person: dict[str, str],
+        person_by_name: dict[str, str],
+    ) -> None:
+        for table, raw_id, fields in self._fusion._iter_raw_rows(batch_id, source_type):
+            local = normalize_phone(self._fusion._raw_field(fields, "本机号码"))
+            peer = normalize_phone(self._fusion._raw_field(fields, "对方号码"))
             if not local or not peer:
                 continue
-            left = person_by_identifier.get(("phone", local), f"phone:{local}")
-            right = person_by_identifier.get(("phone", peer), f"phone:{peer}")
-            add_node(f"phone:{local}", local, "phone")
-            add_node(f"phone:{peer}", peer, "phone")
-            duration = self._to_float(fields.get("呼叫时长")) or 0.0
-            record = {"record_type": "telecom", "time": fields.get("呼叫开始时间") or fields.get("短信发送接收时间") or "", "summary": fields.get("通话类型") or fields.get("话单类型") or "", "amount": duration, "source_ref": {"layer": "raw", "table": table, "pk": {"raw_id": raw_id}, "batch_id": batch_id}}
+            owner = self._fusion._raw_field(fields, "机主姓名", "用户姓名", "姓名")
+            if owner:
+                owner_norm = normalize_identifier("person_name", owner)
+                if owner_norm in person_by_name:
+                    phone_to_person[local] = person_by_name[owner_norm]
+            left = resolve_phone_node(local)
+            right = resolve_phone_node(peer)
+            duration = self._to_float(self._fusion._raw_field(fields, "呼叫时长")) or 0.0
+            call_time = self._fusion._raw_field(fields, "呼叫开始时间", "短信发送接收时间")
+            record = {"record_type": "telecom", "time": call_time, "summary": self._fusion._raw_field(fields, "通话类型", "话单类型") or "", "amount": duration, "counterparty": peer, "source_ref": {"layer": "raw", "table": table, "pk": {"raw_id": raw_id}, "batch_id": batch_id}}
             add_edge(left, right, "telecom", duration=duration, record=record)
 
     def _add_enterprise_edges(self, batch_id: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any, person_by_name: dict[str, str]) -> None:
@@ -321,7 +454,7 @@ class GraphExploreService:
                 add_edge(pid, ent_id, "enterprise", record={"record_type": "enterprise", "summary": f"{name} 关联 {row[1]}", "source_ref": {"layer": "std", "table": "std_enterprise_profile", "pk": {"enterprise_id": int(row[0])}, "batch_id": batch_id}})
 
     def _add_commercial_edges(self, batch_id: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any) -> None:
-        for table, raw_id, fields in self._iter_raw_rows(batch_id, "commercial"):
+        for table, raw_id, fields in self._fusion._iter_raw_rows(batch_id, "commercial"):
             event = fields.get("询价单号") or fields.get("项目名称") or f"商务记录{raw_id}"
             event_id = f"commercial_event:{normalize_identifier('person_name', event) or raw_id}"
             add_node(event_id, event, "commercial_event")
@@ -352,12 +485,16 @@ class GraphExploreService:
 
     def _person_or_wechat(self, name: str, person_by_name: dict[str, str], person_by_identifier: dict[tuple[str, str], str], add_node: Any) -> str:
         norm = normalize_identifier("wechat_name", name)
-        person_id = person_by_name.get(norm) or person_by_identifier.get(("wechat_name", norm))
+        name_norm = normalize_identifier("person_name", name)
+        person_id = person_by_name.get(norm) or person_by_name.get(name_norm) or person_by_identifier.get(("wechat_name", norm))
         if person_id:
             return person_id
         if norm:
             add_node(f"wechat:{norm}", name, "wechat")
             return f"wechat:{norm}"
+        if name_norm:
+            add_node(f"person_name:{name_norm}", name, "unknown")
+            return f"person_name:{name_norm}"
         return ""
 
     def _resolve_anchor(self, case_id: int, item: dict[str, Any], nodes: dict[str, ExploreNode]) -> str:
@@ -400,51 +537,185 @@ class GraphExploreService:
         return found
 
     def _common_neighbors(self, anchors: list[str], edges: dict[str, ExploreEdge], nodes: dict[str, ExploreNode]) -> list[dict[str, Any]]:
-        neigh: list[set[str]] = []
-        rel_types: dict[str, set[str]] = defaultdict(set)
-        for anchor in anchors[:2]:
-            current = set()
+        """两人共同关联的企业：仅统计双方均通过工商关系连到的企业节点。"""
+        if len(anchors) < 2:
+            return []
+
+        def enterprise_neighbors(anchor: str) -> set[str]:
+            linked: set[str] = set()
             for edge in edges.values():
+                if edge.type != "enterprise":
+                    continue
                 other = ""
                 if edge.source == anchor:
                     other = edge.target
                 elif edge.target == anchor:
                     other = edge.source
-                if other:
-                    current.add(other)
-                    rel_types[other].add(edge.type)
-            neigh.append(current)
-        common = sorted(neigh[0] & neigh[1]) if len(neigh) == 2 else []
-        return [{"node_id": node_id, "label": nodes[node_id].label, "type": nodes[node_id].type, "relation_types": sorted(rel_types[node_id]), "paths": [[anchors[0], node_id, anchors[1]]]} for node_id in common if node_id in nodes]
+                if not other:
+                    continue
+                other_node = nodes.get(other)
+                if other_node and other_node.type == "enterprise":
+                    linked.add(other)
+            return linked
+
+        ent_a = enterprise_neighbors(anchors[0])
+        ent_b = enterprise_neighbors(anchors[1])
+        common = sorted(ent_a & ent_b)
+        result: list[dict[str, Any]] = []
+        for node_id in common:
+            if node_id not in nodes:
+                continue
+            node = nodes[node_id]
+            result.append(
+                {
+                    "node_id": node_id,
+                    "label": node.label,
+                    "type": node.type,
+                    "relation_types": ["enterprise"],
+                    "paths": [[anchors[0], node_id, anchors[1]]],
+                }
+            )
+        return result
 
     def _case_batch_ids(self, case_id: int) -> list[str]:
         return [str(row[0]) for row in self._client.query_all("SELECT import_batch_id FROM rel_case_batch WHERE case_id=? ORDER BY bound_at;", (case_id,))]
 
     def _batch_source_type(self, batch_id: str) -> str:
-        rows = self._client.query_all("SELECT source_type FROM rel_case_batch WHERE import_batch_id=? LIMIT 1;", (batch_id,))
-        return str(rows[0][0] or "") if rows else ""
+        return self._fusion._batch_source_type(batch_id)
 
-    def _iter_raw_rows(self, batch_id: str, source_type: str):
-        tables = self._client.query_all(
-            "SELECT raw_table_name FROM meta_schema_registry WHERE source_type=?;",
-            (source_type,),
-        )
-        for (table,) in tables:
-            table_name = str(table)
-            columns = {str(row[1]) for row in self._client.query_all(f"PRAGMA table_info({self._client.quote_ident(table_name)});")}
-            if "import_batch_id" not in columns or "raw_payload" not in columns:
+    def _build_phone_person_map(
+        self,
+        case_id: int,
+        batch_ids: list[str],
+        person_by_name: dict[str, str],
+        person_by_identifier: dict[tuple[str, str], str],
+    ) -> dict[str, str]:
+        phone_map: dict[str, str] = {}
+        for (itype, norm), person_id in person_by_identifier.items():
+            if itype == "phone" and norm:
+                phone_map[norm] = person_id
+        for batch_id in batch_ids:
+            if self._fusion._batch_source_type(batch_id) != "bank":
                 continue
-            sql = f"SELECT raw_id, raw_payload FROM {self._client.quote_ident(table_name)} WHERE import_batch_id=?;"
-            for raw_id, raw_payload in self._client.query_all(sql, (batch_id,)):
-                try:
-                    fields = json.loads(str(raw_payload or "{}"))
-                except json.JSONDecodeError:
-                    fields = {}
-                if isinstance(fields, dict):
-                    yield table_name, int(raw_id), {str(k): str(v or "") for k, v in fields.items()}
+            rows = self._client.query_all(
+                """
+                SELECT person_name, mobile FROM std_bank_account
+                WHERE import_batch_id=? AND COALESCE(mobile, '') != '';
+                """,
+                (batch_id,),
+            )
+            for person_name, mobile in rows:
+                phone_norm = normalize_phone(str(mobile or ""))
+                name_norm = normalize_identifier("person_name", str(person_name or ""))
+                if phone_norm and name_norm in person_by_name:
+                    phone_map[phone_norm] = person_by_name[name_norm]
+        return phone_map
+
+    def _resolve_node_identifiers(self, case_id: int, node_id: str, label: str = "") -> list[dict[str, str]]:
+        out: list[dict[str, str]] = []
+        if node_id.startswith("person:"):
+            try:
+                person_id = int(node_id.split(":", 1)[1])
+            except ValueError:
+                return out
+            person = self._person_links.get_person(case_id, person_id)
+            if person is None:
+                return out
+            for link in person.links:
+                identifier_type = str(link.get("identifier_type") or "")
+                out.append(
+                    {
+                        "identifier_type": identifier_type,
+                        "identifier_value": str(link.get("identifier_value") or ""),
+                        "display_label": IDENTIFIER_LABELS.get(identifier_type, identifier_type),
+                    }
+                )
+            return out
+        if ":" not in node_id:
+            return out
+        prefix, norm = node_id.split(":", 1)
+        type_map = {
+            "phone": "phone",
+            "bank_card": "bank_card",
+            "bank_acct": "bank_acct",
+            "wechat": "wechat_name",
+            "enterprise": "enterprise_name",
+            "person_name": "person_name",
+        }
+        identifier_type = type_map.get(prefix, prefix)
+        out.append(
+            {
+                "identifier_type": identifier_type,
+                "identifier_value": label or norm,
+                "display_label": IDENTIFIER_LABELS.get(identifier_type, identifier_type),
+            }
+        )
+        return out
+
+    def _ids_for_node(self, case_id: int, node_id: str) -> dict[str, set[str]]:
+        if node_id.startswith("person:"):
+            try:
+                person_id = int(node_id.split(":", 1)[1])
+            except ValueError:
+                return defaultdict(set)
+            return self._person_links.get_identifier_sets(case_id, person_id)
+        ids: dict[str, set[str]] = defaultdict(set)
+        if ":" not in node_id:
+            return ids
+        prefix, norm = node_id.split(":", 1)
+        if prefix == "phone":
+            ids["phone"].add(norm)
+        elif prefix in {"bank_card", "bank_acct"}:
+            ids["bank_card"].add(norm)
+            ids["bank_acct"].add(norm)
+        elif prefix == "wechat":
+            ids["wechat_name"].add(norm)
+        elif prefix == "enterprise":
+            ids["enterprise_name"].add(norm)
+        elif prefix == "person_name":
+            ids["person_name"].add(norm)
+        return ids
+
+    def _node_display_label(self, case_id: int, node_id: str) -> str:
+        if node_id.startswith("person:"):
+            try:
+                person_id = int(node_id.split(":", 1)[1])
+                person = self._person_links.get_person(case_id, person_id)
+                if person:
+                    return person.display_name
+            except ValueError:
+                pass
+        return node_id.split(":", 1)[-1] if ":" in node_id else node_id
+
+    @staticmethod
+    def _filter_records_by_date(records: list[Any], date_from: str, date_to: str) -> list[Any]:
+        if not date_from and not date_to:
+            return records
+        filtered: list[Any] = []
+        for rec in records:
+            time_value = getattr(rec, "time", None) or ""
+            day = str(time_value)[:10]
+            if not day:
+                continue
+            if date_from and day < date_from:
+                continue
+            if date_to and day > date_to:
+                continue
+            filtered.append(rec)
+        return filtered
 
     def _clone_node(self, node: ExploreNode) -> ExploreNode:
-        return ExploreNode(id=node.id, label=node.label, type=node.type, depth=node.depth, is_anchor=node.is_anchor, anchor_index=node.anchor_index, degree=node.degree, stats=dict(node.stats))
+        return ExploreNode(
+            id=node.id,
+            label=node.label,
+            type=node.type,
+            depth=node.depth,
+            is_anchor=node.is_anchor,
+            anchor_index=node.anchor_index,
+            degree=node.degree,
+            stats=dict(node.stats),
+            identifiers=list(node.identifiers),
+        )
 
     def _bump_node_stats(self, node: ExploreNode, relation_type: str) -> None:
         node.stats[relation_type] = node.stats.get(relation_type, 0) + 1

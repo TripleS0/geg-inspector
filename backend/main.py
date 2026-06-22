@@ -212,6 +212,18 @@ class GraphExplorePayload(BaseModel):
     include_sample_records: bool = True
 
 
+class GraphSelectionDetailPayload(BaseModel):
+    """Graph node/edge detail and chart stats request."""
+
+    kind: str
+    node_id: str = ""
+    source: str = ""
+    target: str = ""
+    edge_type: str = ""
+    date_from: str = ""
+    date_to: str = ""
+
+
 class TelecomAnalysisFilterRequest(BaseModel):
     """Telecom CDR analysis filter payload."""
 
@@ -332,6 +344,7 @@ class FusionModelSavePayload(BaseModel):
 class DataCenterRecordDeleteItem(BaseModel):
     record_kind: str
     record_id: int
+    raw_table: Optional[str] = None
 
 
 class DataCenterDeletePayload(BaseModel):
@@ -701,10 +714,11 @@ def create_app() -> FastAPI:
         if source_type not in {"bank", "commercial", "enterprise", "wechat", "telecom"}:
             raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、enterprise、wechat 或 telecom")
         task_upload_dir = uploads_dir() / source_type
-        task_upload_dir.mkdir(parents=True, exist_ok=True)
         saved: List[str] = []
+        task_upload_dir.mkdir(parents=True, exist_ok=True)
         for item in files:
-            target = task_upload_dir / Path(item.filename or "upload.xlsx").name
+            original = Path(item.filename or "upload.xlsx").name
+            target = task_upload_dir / f"{uuid.uuid4().hex}_{original}"
             with target.open("wb") as fp:
                 shutil.copyfileobj(item.file, fp)
             saved.append(str(target))
@@ -844,7 +858,8 @@ def create_app() -> FastAPI:
         task_upload_dir.mkdir(parents=True, exist_ok=True)
         saved: List[str] = []
         for item in files:
-            target = task_upload_dir / Path(item.filename or "upload.xlsx").name
+            original = Path(item.filename or "upload.xlsx").name
+            target = task_upload_dir / f"{uuid.uuid4().hex}_{original}"
             with target.open("wb") as fp:
                 shutil.copyfileobj(item.file, fp)
             saved.append(str(target))
@@ -1168,6 +1183,16 @@ def create_app() -> FastAPI:
         try:
             data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
             return FusionUseCase().explore_graph(case_id, data)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.post("/api/cases/{case_id}/graph/selection-detail")
+    def case_graph_selection_detail(case_id: int, payload: GraphSelectionDetailPayload) -> Dict[str, Any]:
+        if CaseUseCase().get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="案件不存在")
+        try:
+            data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+            return FusionUseCase().graph_selection_detail(case_id, data)
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
 

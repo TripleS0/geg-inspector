@@ -169,7 +169,7 @@ function BankOcrProofreadPage() {
       const status = await pollTask(task_id);
       message.success("原始表已录入；请配置银行模板映射后在批次管理中标准化");
       const importBatchId = String(status.result?.import_batch_id || "");
-      navigate(importBatchId ? `/batches?highlight=${encodeURIComponent(importBatchId)}` : "/batches");
+      navigate(importBatchId ? `/data-center/manage?highlight=${encodeURIComponent(importBatchId)}` : "/data-center/manage");
     } catch (err) {
       message.error((err as Error).message || "录入失败");
     } finally {
@@ -182,7 +182,7 @@ function BankOcrProofreadPage() {
     try {
       await api.deleteBankOcrJob(jobId);
       message.success("已放弃该 OCR 草稿");
-      navigate("/import");
+      navigate("/fusion-cockpit/new");
     } catch (err) {
       message.error((err as Error).message || "删除失败");
     }
@@ -194,7 +194,7 @@ function BankOcrProofreadPage() {
   });
 
   if (!jobId) {
-    return <div className="app-card">缺少 OCR 任务编号，<Link to="/import">返回导入页</Link></div>;
+    return <div className="app-card">缺少 OCR 任务编号，<Link to="/fusion-cockpit/new">返回新建案件</Link></div>;
   }
 
   return (
@@ -207,7 +207,7 @@ function BankOcrProofreadPage() {
             <Paragraph style={{ color: "#5b6477", marginBottom: 0 }}>
               左侧对照原图，右侧修正识别结果。列名保持 OCR 原始表头（如存入金额、检出金额），不会自动合并为标准字段。
               确认无误后录入原始表，再到
-              <Link to="/bank-templates"> 银行模板录入 </Link>
+              <Link to="/data-center/manage/bank-templates"> 银行模板录入 </Link>
               配置映射，并在批次管理中执行标准化。
             </Paragraph>
           </div>
@@ -282,11 +282,11 @@ function BankOcrProofreadPage() {
             <Button type="primary" onClick={() => void onCommit()} loading={committing} disabled={job?.status === "committed"}>
               确认录入原始表
             </Button>
-            <Link to="/bank-templates">银行模板录入</Link>
+            <Link to="/data-center/manage/bank-templates">银行模板录入</Link>
             <Button danger onClick={() => void onDiscard()} disabled={job?.status === "committed"}>
               放弃
             </Button>
-            <Link to="/import">返回导入页</Link>
+            <Link to="/fusion-cockpit/new">返回新建案件</Link>
           </Space>
         </Space>
       </Card>

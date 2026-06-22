@@ -173,7 +173,9 @@ class CaseUseCase:
                 continue
             kind = dataset.resolve_batch_kind(batch_id)
             if not kind:
-                raise ValueError(f"批次不存在: {batch_id}")
+                raise ValueError(
+                    f"批次不存在或导入未产生数据: {batch_id}（请检查导入是否成功，勿重复添加相同文件）"
+                )
             existing = self._client.query_all(
                 "SELECT case_id FROM rel_case_batch WHERE import_batch_id=? LIMIT 1;",
                 (batch_id,),

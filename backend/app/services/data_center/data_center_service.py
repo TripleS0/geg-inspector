@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from app.services.data_center.raw_center_record_loader import RawCenterRecordLoader
 from app.services.shared.db.sqlite_client import SqliteClient
 
 SOURCE_LABELS: dict[str, str] = {
@@ -27,6 +28,28 @@ class DataCenterService:
             (case_id,),
         )
         return [str(row[0]) for row in rows]
+
+    def _batch_source_type(self, batch_id: str) -> str:
+        rows = self._client.query_all(
+            "SELECT source_type FROM rel_case_batch WHERE import_batch_id=? LIMIT 1;",
+            (batch_id,),
+        )
+        return str(rows[0][0] or "") if rows else ""
+
+    def _batch_scopes(self, case_id: int | None, batch_id: str | None) -> list[tuple[str, str]]:
+        if batch_id:
+            st = self._batch_source_type(batch_id.strip())
+            return [(batch_id.strip(), st)] if st else []
+        if case_id:
+            rows = self._client.query_all(
+                "SELECT import_batch_id, source_type FROM rel_case_batch WHERE case_id=? ORDER BY bound_at;",
+                (case_id,),
+            )
+            return [(str(row[0]), str(row[1] or "")) for row in rows]
+        return []
+
+    def _scoped_to_case_or_batch(self, case_id: int | None, batch_id: str | None) -> bool:
+        return bool(case_id or batch_id)
 
     def _batch_clause(self, case_id: int | None, batch_id: str | None) -> tuple[str, list[Any]]:
         if batch_id:
@@ -54,6 +77,29 @@ class DataCenterService:
         lim = max(1, min(int(limit), 200))
         off = max(0, int(offset))
         st = (source_type or "all").strip()
+
+        if self._scoped_to_case_or_batch(case_id, batch_id):
+            std_items = self._list_std_items(
+                batch_clause,
+                batch_params,
+                source_type=st,
+                keyword=kw,
+            )
+            raw_items = RawCenterRecordLoader(self._client).load_records(
+                self._batch_scopes(case_id, batch_id),
+                source_type=st if st != "all" else None,
+                keyword=kw,
+            )
+            merged = std_items + raw_items
+            merged.sort(
+                key=lambda item: (
+                    self._record_sort_key(item.get("record_date")),
+                    item.get("record_id") or 0,
+                ),
+                reverse=True,
+            )
+            total = len(merged)
+            return {"items": merged[off : off + lim], "total": total, "limit": lim, "offset": off}
 
         txn_kw_clause = ""
         txn_kw_params: list[Any] = []
@@ -131,19 +177,7 @@ class DataCenterService:
             tuple(params + [lim, off]),
         )
 
-        items = [
-            {
-                "record_kind": str(row[0]),
-                "record_id": int(row[1]),
-                "source_type": str(row[2]),
-                "source_type_label": SOURCE_LABELS.get(str(row[2]), str(row[2])),
-                "import_batch_id": str(row[3]),
-                "content": str(row[4]),
-                "record_date": self._format_date(str(row[5])),
-                "source_file": str(row[6]) or "—",
-            }
-            for row in rows
-        ]
+        items = [self._row_to_record(row) for row in rows]
 
         total = self._count_total(
             batch_clause,
@@ -158,6 +192,110 @@ class DataCenterService:
             ent_kw_params,
         )
         return {"items": items, "total": total, "limit": lim, "offset": off}
+
+    def _list_std_items(
+        self,
+        batch_clause: str,
+        batch_params: list[Any],
+        *,
+        source_type: str,
+        keyword: str,
+    ) -> list[dict[str, Any]]:
+        kw = (keyword or "").strip()
+        st = (source_type or "all").strip()
+        txn_kw_clause = ""
+        txn_kw_params: list[Any] = []
+        ent_kw_clause = ""
+        ent_kw_params: list[Any] = []
+        if kw:
+            like = f"%{kw}%"
+            txn_kw_clause = """
+                AND (
+                    COALESCE(counterparty_name, '') LIKE ?
+                    OR COALESCE(person_name, '') LIKE ?
+                    OR COALESCE(summary, '') LIKE ?
+                    OR COALESCE(source_name, '') LIKE ?
+                    OR COALESCE(import_batch_id, '') LIKE ?
+                )
+            """
+            txn_kw_params = [like, like, like, like, like]
+            ent_kw_clause = """
+                AND (
+                    enterprise_name LIKE ?
+                    OR source_file_name LIKE ?
+                    OR import_batch_id LIKE ?
+                )
+            """
+            ent_kw_params = [like, like, like]
+
+        include_txn = st in ("all", "bank", "wechat", "telecom", "commercial")
+        include_ent = st in ("all", "enterprise")
+        txn_src_clause = ""
+        txn_src_params: list[Any] = []
+        if st not in ("all", "enterprise"):
+            txn_src_clause = "AND source_type=?"
+            txn_src_params = [st]
+
+        parts: list[str] = []
+        params: list[Any] = []
+        if include_txn:
+            parts.append(
+                f"""
+                SELECT 'txn' AS record_kind, std_id AS record_id, source_type, import_batch_id,
+                       COALESCE(counterparty_name, person_name, summary, '—') AS content,
+                       COALESCE(txn_time, standardized_at, '') AS record_date,
+                       COALESCE(source_name, '') AS source_file
+                FROM std_bank_txn
+                WHERE 1=1 {batch_clause} {txn_src_clause} {txn_kw_clause}
+                """
+            )
+            params.extend(batch_params + txn_src_params + txn_kw_params)
+        if include_ent:
+            parts.append(
+                f"""
+                SELECT 'enterprise' AS record_kind, enterprise_id AS record_id, 'enterprise' AS source_type,
+                       import_batch_id, enterprise_name AS content,
+                       COALESCE(establish_date, imported_at, '') AS record_date,
+                       source_file_name AS source_file
+                FROM std_enterprise_profile
+                WHERE 1=1 {batch_clause} {ent_kw_clause}
+                """
+            )
+            params.extend(batch_params + ent_kw_params)
+
+        if not parts:
+            return []
+
+        union_sql = " UNION ALL ".join(parts)
+        rows = self._client.query_all(
+            f"""
+            SELECT record_kind, record_id, source_type, import_batch_id, content, record_date, source_file
+            FROM ({union_sql})
+            ORDER BY record_date DESC, record_id DESC;
+            """,
+            tuple(params),
+        )
+        return [self._row_to_record(row) for row in rows]
+
+    @staticmethod
+    def _row_to_record(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "record_kind": str(row[0]),
+            "record_id": int(row[1]),
+            "source_type": str(row[2]),
+            "source_type_label": SOURCE_LABELS.get(str(row[2]), str(row[2])),
+            "import_batch_id": str(row[3]),
+            "content": str(row[4]),
+            "record_date": DataCenterService._format_date(str(row[5])),
+            "source_file": str(row[6]) or "—",
+        }
+
+    @staticmethod
+    def _record_sort_key(record_date: str | None) -> str:
+        text = (record_date or "").strip()
+        if not text or text == "—":
+            return ""
+        return text.replace(".", "-")
 
     def _count_total(
         self,
@@ -189,6 +327,7 @@ class DataCenterService:
 
     def delete_records(self, items: list[dict[str, Any]]) -> dict[str, int]:
         deleted = 0
+        raw_loader = RawCenterRecordLoader(self._client)
         for item in items:
             kind = str(item.get("record_kind") or "")
             rid = int(item.get("record_id") or 0)
@@ -207,16 +346,21 @@ class DataCenterService:
                     (rid,),
                 )
                 deleted += 1
+            elif kind == "raw":
+                raw_table = str(item.get("raw_table") or "")
+                if raw_loader.delete_raw_record(raw_table, rid):
+                    deleted += 1
         return {"deleted": deleted}
 
     def get_dashboard(self, case_id: int | None = None) -> dict[str, Any]:
         batch_clause, batch_params = self._batch_clause(case_id, None)
+        batch_scopes = self._batch_scopes(case_id, None) if case_id else []
 
-        overview = self._overview_stats(batch_clause, batch_params, case_id)
-        source_distribution = self._source_distribution(batch_clause, batch_params)
-        timeline = self._timeline_series(batch_clause, batch_params)
-        batch_ranking = self._batch_ranking(batch_clause, batch_params)
-        person_ranking = self._person_ranking(batch_clause, batch_params, case_id)
+        overview = self._overview_stats(batch_clause, batch_params, case_id, batch_scopes)
+        source_distribution = self._source_distribution(batch_clause, batch_params, batch_scopes)
+        timeline = self._timeline_series(batch_clause, batch_params, batch_scopes)
+        batch_ranking = self._batch_ranking(batch_clause, batch_params, batch_scopes=batch_scopes)
+        person_ranking = self._person_ranking(batch_clause, batch_params, case_id, batch_scopes=batch_scopes)
         event_distribution = self._event_distribution(case_id) if case_id else []
 
         return {
@@ -234,6 +378,7 @@ class DataCenterService:
         batch_clause: str,
         batch_params: list[Any],
         case_id: int | None,
+        batch_scopes: list[tuple[str, str]] | None = None,
     ) -> dict[str, int]:
         txn_rows = self._client.query_all(
             f"SELECT COUNT(*) FROM std_bank_txn WHERE 1=1 {batch_clause};",
@@ -243,6 +388,10 @@ class DataCenterService:
             f"SELECT COUNT(*) FROM std_enterprise_profile WHERE 1=1 {batch_clause};",
             tuple(batch_params),
         )
+        raw_total = 0
+        if batch_scopes:
+            raw_total = RawCenterRecordLoader(self._client).count_records(batch_scopes)
+
         batch_count = 0
         if case_id:
             batch_count = len(self._case_batch_ids(case_id))
@@ -264,10 +413,12 @@ class DataCenterService:
             )
             person_count = int(p_rows[0][0]) if p_rows else 0
 
+        txn_count = int(txn_rows[0][0] if txn_rows else 0) + raw_total
+        enterprise_count = int(ent_rows[0][0] if ent_rows else 0)
         return {
-            "record_count": int(txn_rows[0][0] if txn_rows else 0) + int(ent_rows[0][0] if ent_rows else 0),
-            "txn_count": int(txn_rows[0][0] if txn_rows else 0),
-            "enterprise_count": int(ent_rows[0][0] if ent_rows else 0),
+            "record_count": txn_count + enterprise_count,
+            "txn_count": txn_count,
+            "enterprise_count": enterprise_count,
             "batch_count": batch_count,
             "case_count": int(case_rows[0][0] if case_rows else 0),
             "person_count": person_count,
@@ -277,6 +428,7 @@ class DataCenterService:
         self,
         batch_clause: str,
         batch_params: list[Any],
+        batch_scopes: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         rows = self._client.query_all(
             f"""
@@ -288,13 +440,18 @@ class DataCenterService:
             """,
             tuple(batch_params),
         )
+        count_map: dict[str, int] = {str(row[0]): int(row[1]) for row in rows}
+        if batch_scopes:
+            for st, cnt in RawCenterRecordLoader(self._client).source_counts(batch_scopes).items():
+                count_map[st] = count_map.get(st, 0) + cnt
+
         items = [
             {
-                "source_type": str(row[0]),
-                "label": SOURCE_LABELS.get(str(row[0]), str(row[0])),
-                "count": int(row[1]),
+                "source_type": st,
+                "label": SOURCE_LABELS.get(st, st),
+                "count": cnt,
             }
-            for row in rows
+            for st, cnt in sorted(count_map.items(), key=lambda x: x[1], reverse=True)
         ]
         ent_rows = self._client.query_all(
             f"SELECT COUNT(*) FROM std_enterprise_profile WHERE 1=1 {batch_clause};",
@@ -309,6 +466,7 @@ class DataCenterService:
         self,
         batch_clause: str,
         batch_params: list[Any],
+        batch_scopes: list[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
         rows = self._client.query_all(
             f"""
@@ -354,6 +512,17 @@ class DataCenterService:
                 months.append(month)
             series_map.setdefault("enterprise", {})[month] = cnt
 
+        if batch_scopes:
+            for item in RawCenterRecordLoader(self._client).load_records(batch_scopes):
+                month = self._month_key(item.get("record_date"))
+                if not month:
+                    continue
+                st = str(item.get("source_type") or "")
+                if month not in months:
+                    months.append(month)
+                series_map.setdefault(st, {})
+                series_map[st][month] = series_map[st].get(month, 0) + 1
+
         months.sort()
         series: list[dict[str, Any]] = []
         for st, month_counts in series_map.items():
@@ -371,29 +540,39 @@ class DataCenterService:
         batch_clause: str,
         batch_params: list[Any],
         *,
+        batch_scopes: list[tuple[str, str]] | None = None,
         limit: int = 8,
     ) -> list[dict[str, Any]]:
+        count_map: dict[tuple[str, str], int] = {}
         rows = self._client.query_all(
             f"""
             SELECT import_batch_id, source_type, COUNT(*) AS cnt
             FROM std_bank_txn
             WHERE 1=1 {batch_clause}
-            GROUP BY import_batch_id, source_type
-            ORDER BY cnt DESC
-            LIMIT ?;
+            GROUP BY import_batch_id, source_type;
             """,
-            tuple(batch_params + [limit]),
+            tuple(batch_params),
         )
-        name_map = self._batch_name_map([str(row[0]) for row in rows])
+        for row in rows:
+            key = (str(row[0]), str(row[1]))
+            count_map[key] = count_map.get(key, 0) + int(row[2])
+
+        if batch_scopes:
+            for item in RawCenterRecordLoader(self._client).load_records(batch_scopes):
+                key = (str(item.get("import_batch_id") or ""), str(item.get("source_type") or ""))
+                count_map[key] = count_map.get(key, 0) + 1
+
+        ranked = sorted(count_map.items(), key=lambda x: x[1], reverse=True)[:limit]
+        name_map = self._batch_name_map([batch_id for (batch_id, _), _ in ranked])
         return [
             {
-                "import_batch_id": str(row[0]),
-                "batch_name": name_map.get(str(row[0]), str(row[0])[:8] + "…"),
-                "source_type": str(row[1]),
-                "source_type_label": SOURCE_LABELS.get(str(row[1]), str(row[1])),
-                "count": int(row[2]),
+                "import_batch_id": batch_id,
+                "batch_name": name_map.get(batch_id, batch_id[:8] + "…"),
+                "source_type": st,
+                "source_type_label": SOURCE_LABELS.get(st, st),
+                "count": cnt,
             }
-            for row in rows
+            for (batch_id, st), cnt in ranked
         ]
 
     def _batch_name_map(self, batch_ids: list[str]) -> dict[str, str]:
@@ -412,6 +591,7 @@ class DataCenterService:
         batch_params: list[Any],
         case_id: int | None,
         *,
+        batch_scopes: list[tuple[str, str]] | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         transfer_rows = self._client.query_all(
@@ -445,6 +625,16 @@ class DataCenterService:
 
         transfer_map = {str(row[0]): int(row[1]) for row in transfer_rows}
         call_map = {str(row[0]): int(row[1]) for row in call_rows}
+
+        if batch_scopes:
+            for item in RawCenterRecordLoader(self._client).load_records(batch_scopes):
+                st = str(item.get("source_type") or "")
+                for name in self._names_from_raw_content(str(item.get("content") or ""), st):
+                    if st == "telecom":
+                        call_map[name] = call_map.get(name, 0) + 1
+                    elif st in ("bank", "wechat", "commercial"):
+                        transfer_map[name] = transfer_map.get(name, 0) + 1
+
         names = set(transfer_map) | set(call_map)
 
         if case_id:
@@ -485,6 +675,29 @@ class DataCenterService:
             ]
         except Exception:
             return []
+
+    @staticmethod
+    def _month_key(record_date: str | None) -> str:
+        text = (record_date or "").strip().replace(".", "-").replace("/", "-")
+        if len(text) >= 7 and text[4] == "-":
+            return text[:7]
+        return ""
+
+    @staticmethod
+    def _names_from_raw_content(content: str, source_type: str) -> list[str]:
+        text = (content or "").strip()
+        if not text or text == "—":
+            return []
+        if " → " in text:
+            left, right = text.split(" → ", 1)
+            right = right.split(" ", 1)[0].strip()
+            names = [n.strip() for n in (left, right) if n.strip() and n.strip() != "—"]
+            return names
+        if source_type == "commercial" and " · " in text:
+            return [text.split(" · ", 1)[0].strip()]
+        if source_type == "commercial":
+            return [text]
+        return []
 
     @staticmethod
     def _format_date(value: str) -> str:

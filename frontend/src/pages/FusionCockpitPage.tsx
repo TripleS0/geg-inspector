@@ -46,6 +46,7 @@ import {
   AnchorSuggestItem,
 } from "../api";
 import WorkflowGuide, { buildWorkflowSteps, DEFAULT_WORKFLOW_SNAPSHOT } from "../components/WorkflowGuide";
+import { dataManageTablesPath } from "./DataManageLayout";
 import { chartPalette } from "../theme";
 import "dayjs/locale/zh-cn";
 
@@ -344,26 +345,33 @@ function FusionCockpitPage({ embeddedInHub = false, caseIdOverride = null, onBac
     setDetailOpen(true);
   };
 
-  const loadRawDetail = async () => {
-    if (!caseId || !detailRecord?.source_ref) return;
+  useEffect(() => {
+    if (!detailOpen || !caseId || !detailRecord?.source_ref) return;
+    let cancelled = false;
     setRawLoading(true);
-    try {
-      const data = await api.recordDetail(caseId, detailRecord.source_ref);
-      setRawDetail(data);
-    } catch (err) {
-      message.error((err as Error).message);
-    } finally {
-      setRawLoading(false);
-    }
-  };
+    void api
+      .recordDetail(caseId, detailRecord.source_ref)
+      .then((data) => {
+        if (!cancelled) setRawDetail(data);
+      })
+      .catch((err) => {
+        if (!cancelled) message.error((err as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setRawLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [caseId, detailOpen, detailRecord]);
 
   const gotoRawTable = () => {
     if (!rawDetail) return;
     const pk = rawDetail.pk as { raw_id?: number };
     if (rawDetail.layer === "raw" && pk.raw_id) {
-      navigate(`/tables?table=${encodeURIComponent(rawDetail.table)}&highlight=${pk.raw_id}`);
+      navigate(dataManageTablesPath({ table: rawDetail.table, highlight: pk.raw_id }));
     } else {
-      navigate(`/tables?table=${encodeURIComponent(rawDetail.table)}`);
+      navigate(dataManageTablesPath({ table: rawDetail.table }));
     }
   };
 
@@ -705,14 +713,14 @@ function FusionCockpitPage({ embeddedInHub = false, caseIdOverride = null, onBac
   const cockpitBlocked = !caseId || !hasBoundBatch || !hasLinkedPerson;
   const cockpitBlockTitle = !caseId ? "请先选择案件" : !hasBoundBatch ? "当前案件还没有绑定批次" : "当前案件还没有完成人物关联";
   const cockpitBlockDesc = !caseId
-    ? "请在顶部选择一个案件，或先进入案件管理创建案件。"
+    ? "请在顶部选择一个案件，或通过「打开案件」进入已有案件。"
     : !hasBoundBatch
-      ? "融合分析必须基于当前案件的数据范围，请先进入批次管理，把导入批次加入当前案件。"
+      ? "融合分析必须基于当前案件的数据范围，请通过「打开案件」为当前案件绑定导入批次。"
       : "融合分析必须基于人物标识关联结果，请先进入人物关联，扫描候选并关联人物。";
   const cockpitBlockAction = !caseId
-    ? { label: embeddedInHub ? "去打开案件" : "去案件管理", to: embeddedInHub ? "/fusion-cockpit?tab=open" : "/cases" }
+    ? { label: embeddedInHub ? "去打开案件" : "去打开案件", to: "/fusion-cockpit/open" }
     : !hasBoundBatch
-      ? { label: embeddedInHub ? "去新建案件" : "去绑定批次", to: embeddedInHub ? "/fusion-cockpit?tab=new" : "/batches" }
+      ? { label: embeddedInHub ? "去新建案件" : "去打开案件", to: embeddedInHub ? "/fusion-cockpit/new" : "/fusion-cockpit/open" }
       : { label: "去人物关联", to: `/person-linking?case=${caseId}` };
   const guideSteps = buildWorkflowSteps({
     ...DEFAULT_WORKFLOW_SNAPSHOT,
@@ -825,7 +833,7 @@ function FusionCockpitPage({ embeddedInHub = false, caseIdOverride = null, onBac
           />
           <Space wrap>
             <Button type="primary" onClick={() => navigate(cockpitBlockAction.to)}>{cockpitBlockAction.label}</Button>
-            <Button onClick={() => navigate("/")}>返回工作台</Button>
+            <Button onClick={() => navigate("/fusion-cockpit")}>返回驾驶舱</Button>
           </Space>
         </div>
       ) : (
@@ -1247,11 +1255,7 @@ function FusionCockpitPage({ embeddedInHub = false, caseIdOverride = null, onBac
         width={580}
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
-        extra={
-          <Button loading={rawLoading} onClick={() => void loadRawDetail()}>
-            查看原始数据
-          </Button>
-        }
+        loading={rawLoading}
       >
         {detailRecord && (
           <>

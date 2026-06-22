@@ -25,7 +25,7 @@ import {
   DataCenterRecord,
 } from "../api";
 
-const { Title, Paragraph, Text } = Typography;
+const { Paragraph, Text } = Typography;
 
 const SOURCE_OPTIONS = [
   { value: "all", label: "全部类型" },
@@ -67,7 +67,10 @@ function DataManagePage() {
   const [deleteBatchModalOpen, setDeleteBatchModalOpen] = useState(false);
   const [deleteBatchTarget, setDeleteBatchTarget] = useState<string>("");
 
-  const rowKey = (row: DataCenterRecord) => `${row.record_kind}:${row.record_id}`;
+  const rowKey = (row: DataCenterRecord) =>
+    row.record_kind === "raw" && row.raw_table
+      ? `raw:${row.raw_table}:${row.record_id}`
+      : `${row.record_kind}:${row.record_id}`;
 
   const fetchMeta = useCallback(async () => {
     try {
@@ -121,8 +124,8 @@ function DataManagePage() {
 
   useEffect(() => {
     const onCaseChanged = (event: Event) => {
-      const nextCaseId = (event as CustomEvent<{ caseId?: number }>).detail?.caseId;
-      if (nextCaseId) setSelectedCaseId(nextCaseId);
+      const nextCaseId = (event as CustomEvent<{ caseId?: number }>).detail?.caseId ?? null;
+      setSelectedCaseId(nextCaseId);
     };
     window.addEventListener(CASE_CHANGED_EVENT, onCaseChanged);
     return () => window.removeEventListener(CASE_CHANGED_EVENT, onCaseChanged);
@@ -133,10 +136,13 @@ function DataManagePage() {
       message.warning("请先选择要删除的数据");
       return;
     }
-    const items = selectedRowKeys.map((key) => {
-      const [kind, id] = String(key).split(":");
-      return { record_kind: kind, record_id: Number(id) };
-    });
+    const items = records
+      .filter((row) => selectedRowKeys.includes(rowKey(row)))
+      .map((row) => ({
+        record_kind: row.record_kind,
+        record_id: row.record_id,
+        ...(row.raw_table ? { raw_table: row.raw_table } : {}),
+      }));
     try {
       const result = await api.deleteDataCenterRecords(items);
       message.success(`已删除 ${result.deleted} 条数据`);
@@ -148,7 +154,13 @@ function DataManagePage() {
 
   const deleteOne = async (row: DataCenterRecord) => {
     try {
-      await api.deleteDataCenterRecords([{ record_kind: row.record_kind, record_id: row.record_id }]);
+      await api.deleteDataCenterRecords([
+        {
+          record_kind: row.record_kind,
+          record_id: row.record_id,
+          ...(row.raw_table ? { raw_table: row.raw_table } : {}),
+        },
+      ]);
       message.success("已删除");
       void fetchRecords();
     } catch (err) {
@@ -291,7 +303,7 @@ function DataManagePage() {
               批量删除
             </Button>
           </Popconfirm>
-          <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => navigate("/import")}>
+          <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => navigate("/fusion-cockpit/new")}>
             导入新数据
           </Button>
         </Space>
@@ -436,9 +448,6 @@ function DataManagePage() {
   return (
     <div className="data-manage-page">
       <Card className="app-card" bordered={false}>
-        <Title level={4} style={{ marginTop: 0 }}>
-          数据管理
-        </Title>
         <Tabs
           items={[
             { key: "records", label: "数据记录", children: recordTab },

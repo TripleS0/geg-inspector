@@ -97,8 +97,9 @@ export interface FusionEventsResponse {
 }
 
 export interface DataCenterRecord {
-  record_kind: "txn" | "enterprise";
+  record_kind: "txn" | "enterprise" | "raw";
   record_id: number;
+  raw_table?: string;
   source_type: string;
   source_type_label: string;
   import_batch_id: string;
@@ -606,6 +607,34 @@ export interface GraphExploreNode {
   anchor_index?: number | null;
   degree: number;
   stats: Record<string, number>;
+  identifiers?: Array<{
+    identifier_type: string;
+    identifier_value: string;
+    display_label: string;
+  }>;
+}
+
+export interface GraphSelectionDetailRequest {
+  kind: "node" | "edge";
+  node_id?: string;
+  source?: string;
+  target?: string;
+  edge_type?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export interface GraphSelectionDetailResponse {
+  kind: "node" | "edge";
+  label: string;
+  identifiers: Array<{
+    identifier_type: string;
+    identifier_value: string;
+    display_label: string;
+  }>;
+  records: FusionRecord[];
+  charts: Record<string, unknown>;
+  kpis: Record<string, number>;
 }
 
 export interface GraphExploreEdge {
@@ -1136,6 +1165,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  graphSelectionDetail: (caseId: number, body: GraphSelectionDetailRequest) =>
+    http<GraphSelectionDetailResponse>(`/api/cases/${caseId}/graph/selection-detail`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   recordDetail: (caseId: number, sourceRef: Record<string, unknown>) =>
     http<RecordDetailResponse>(
       `/api/cases/${caseId}/records/detail?ref=${encodeURIComponent(JSON.stringify(sourceRef))}`
@@ -1185,7 +1220,9 @@ export const api = {
     return http<DataCenterRecordsResponse>(`/api/data-center/records${query ? `?${query}` : ""}`);
   },
 
-  deleteDataCenterRecords: (items: Array<{ record_kind: string; record_id: number }>) =>
+  deleteDataCenterRecords: (
+    items: Array<{ record_kind: string; record_id: number; raw_table?: string }>
+  ) =>
     http<{ deleted: number }>("/api/data-center/records", {
       method: "DELETE",
       body: JSON.stringify({ items }),

@@ -9,7 +9,7 @@ import {
   Typography,
   message,
 } from "antd";
-import { ArrowDownOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import { api, emitCaseChanged, persistSelectedCaseId, pollTask } from "../../api";
 import PersonLinkingPanel from "./PersonLinkingPanel";
 import { SOURCE_LABELS, SourceType } from "../data-import/constants";
@@ -25,22 +25,32 @@ interface FusionNewCaseFlowProps {
   onComplete: (caseId: number) => void;
 }
 
-type FlowPhase = "draft" | "linking" | "done";
+type FlowStep = 1 | 2 | 3;
+type FlowPhase = "draft" | "importing" | "linking";
 
 function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
+  const [step, setStep] = useState<FlowStep>(1);
   const [caseName, setCaseName] = useState("");
   const [queue, setQueue] = useState<ImportQueueItem[]>([]);
   const [phase, setPhase] = useState<FlowPhase>("draft");
   const [linkingCaseId, setLinkingCaseId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ percent: 0, message: "" });
-  const importForm = useDataImportForm({ allowOcr: false, compact: true });
+  const importForm = useDataImportForm({ allowOcr: false, compact: false });
 
   const addBatch = async () => {
     try {
       const payload = await importForm.getPayload();
       if (payload.bankImportMode === "ocr") {
-        message.warning("新建案件流程暂不支持 OCR，请使用 Excel 导入或前往数据管理");
+        message.warning("新建案件流程暂不支持 OCR，请使用 Excel 导入");
+        return;
+      }
+      const fileKey = payload.files.map((f) => f.name).join("|");
+      const dup = queue.some(
+        (item) => item.values.source_type === payload.values.source_type && item.files.map((f) => f.name).join("|") === fileKey
+      );
+      if (dup) {
+        message.warning("该数据来源与文件已在待导入列表中，请勿重复添加");
         return;
       }
       setQueue((prev) => [
@@ -58,20 +68,19 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
     setQueue((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const resetAll = () => {
-    if (phase !== "draft") return;
-    setCaseName("");
-    setQueue([]);
-    importForm.reset();
-    setProgress({ percent: 0, message: "" });
-    setLinkingCaseId(null);
-    setPhase("draft");
+  const goNextFromStep1 = () => {
+    if (!caseName.trim()) {
+      message.warning("请输入案件名称");
+      return;
+    }
+    setStep(2);
   };
 
   const startImport = async () => {
     const name = caseName.trim();
     if (!name) {
       message.warning("请输入案件名称");
+      setStep(1);
       return;
     }
     if (!queue.length) {
@@ -80,6 +89,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
     }
 
     setRunning(true);
+    setPhase("importing");
     setProgress({ percent: 2, message: "正在创建案件…" });
 
     try {
@@ -89,8 +99,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
       emitCaseChanged(caseId);
 
       const batchIds: string[] = [];
-      const uploadWeight = 50;
-      const bindWeight = 10;
+      const uploadWeight = 70;
 
       for (let index = 0; index < queue.length; index += 1) {
         const item = queue[index];
@@ -115,22 +124,32 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
             message: task.message || `正在导入${label}…`,
           });
         });
-        const batchId = String(status.result?.import_batch_id || "");
+        const result = (status.result || {}) as Record<string, unknown>;
+        const batchId = String(result.import_batch_id || "");
+        const rowsTotal = Number(result.rows_total ?? 0);
+        const failedFiles = Number(result.failed_files ?? 0);
         if (!batchId) {
           throw new Error(`${label} 导入完成但未返回批次编号`);
+        }
+        if (rowsTotal <= 0) {
+          throw new Error(
+            `${label} 导入未产生有效数据（${failedFiles} 个文件失败），请检查文件后重试；勿重复添加相同来源`
+          );
         }
         batchIds.push(batchId);
       }
 
-      setProgress({ percent: 8 + uploadWeight, message: "正在绑定批次到案件…" });
+      setProgress({ percent: 90, message: "正在绑定批次到案件…" });
       await api.bindCaseBatches(caseId, batchIds);
-      setProgress({ percent: 8 + uploadWeight + bindWeight, message: "数据导入完成，请继续人物标识关联…" });
+      setProgress({ percent: 100, message: "导入完成" });
 
       setLinkingCaseId(caseId);
       setPhase("linking");
+      setStep(3);
       message.success("数据导入完成，请完成人物标识关联");
     } catch (err) {
       message.error((err as Error).message || "新建案件失败");
+      setPhase("draft");
       setProgress({ percent: 0, message: "" });
     } finally {
       setRunning(false);
@@ -139,145 +158,143 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
 
   const enterCockpit = () => {
     if (!linkingCaseId) return;
-    setPhase("done");
-    setProgress({ percent: 100, message: "人物关联已完成，正在进入融合分析驾驶舱…" });
     message.success("已进入融合分析驾驶舱");
     onComplete(linkingCaseId);
   };
 
-  const draftLocked = phase !== "draft";
-
-  return (
-    <div className="fusion-hub-panel fusion-new-case-flow">
-      <div className={`fusion-flow-step app-card${draftLocked ? " fusion-flow-step-locked" : ""}`}>
-        <Text className="fusion-flow-step-label">步骤 1</Text>
-        <Title level={5}>请输入案件名</Title>
-        <Input
-          size="large"
-          placeholder="例如：华南机电调查"
-          value={caseName}
-          disabled={running || draftLocked}
-          onChange={(event) => setCaseName(event.target.value)}
-          maxLength={120}
-        />
+  const wizardHead = (
+    <div className="fusion-wizard-head">
+      <Text className="fusion-wizard-step-label">新建案件 · 第 {step} / 3 步</Text>
+      <div className="fusion-wizard-dots">
+        {[1, 2, 3].map((item) => (
+          <span key={item} className={`fusion-wizard-dot${item === step ? " active" : item < step ? " done" : ""}`} />
+        ))}
       </div>
+    </div>
+  );
 
-      <div className="fusion-flow-arrow" aria-hidden>
-        <ArrowDownOutlined />
-      </div>
-
-      <div className={`fusion-flow-step app-card fusion-flow-import${draftLocked ? " fusion-flow-step-locked" : ""}`}>
-        <Text className="fusion-flow-step-label">步骤 2</Text>
-        <Title level={5}>请导入数据</Title>
-        <Paragraph type="secondary">
-          与数据管理相同的导入方式：先选择数据来源，填写批次信息并上传文件；可多次添加不同来源的数据批次。
-        </Paragraph>
-
-        {!draftLocked ? (
-          <>
-            <div className="fusion-import-form-wrap">{importForm.formElement}</div>
-            <Space wrap style={{ marginTop: 12 }}>
-              <Button icon={<PlusOutlined />} disabled={running} onClick={() => void addBatch()}>
-                添加本批数据
-              </Button>
-            </Space>
-          </>
-        ) : null}
-
-        {queue.length > 0 ? (
-          <List
-            className="fusion-import-queue"
-            size="small"
-            bordered
-            header={<Text strong>已导入批次（{queue.length}）</Text>}
-            dataSource={queue}
-            renderItem={(item) => (
-              <List.Item
-                actions={
-                  draftLocked
-                    ? undefined
-                    : [
-                        <Button
-                          key="remove"
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          disabled={running}
-                          onClick={() => removeBatch(item.id)}
-                        />,
-                      ]
-                }
-              >
-                <Space wrap>
-                  <Tag color="volcano">{SOURCE_LABELS[item.values.source_type as SourceType]}</Tag>
-                  <Text>{item.values.batch_name || item.files[0]?.name}</Text>
-                  <Text type="secondary">{item.files.length} 个文件 · {item.values.bank_name || "默认来源"}</Text>
-                </Space>
-              </List.Item>
-            )}
+  if (step === 3) {
+    return (
+      <div className="fusion-new-case-flow fusion-new-case-flow-step3">
+        {wizardHead}
+        {linkingCaseId ? (
+          <PersonLinkingPanel
+            caseId={linkingCaseId}
+            embedded
+            wizardMode
+            initialAutoSetup
+            onEnterCockpit={enterCockpit}
           />
         ) : null}
+      </div>
+    );
+  }
 
-        {phase === "draft" ? (
-          <Space wrap style={{ marginTop: 16 }}>
-            <Button type="primary" loading={running} onClick={() => void startImport()}>
-              开始导入
-            </Button>
-            <Button disabled={running} onClick={resetAll}>
-              清空
-            </Button>
-          </Space>
-        ) : null}
+  return (
+    <div className="fusion-new-case-flow">
+      <div className="fusion-new-case-wizard app-card">
+        {wizardHead}
 
-        {phase !== "draft" && progress.percent > 0 ? (
-          <div style={{ marginTop: 16 }}>
-            <Progress
-              percent={Math.min(progress.percent, phase === "done" ? 100 : 68)}
-              status={phase === "done" ? "success" : "active"}
-              strokeColor={{ "0%": "#ffb366", "100%": "#d94832" }}
+        {step === 1 ? (
+          <div className="fusion-wizard-body fusion-wizard-body-step1">
+            <Title level={3} className="fusion-wizard-title">请输入案件名称</Title>
+            <Paragraph type="secondary" className="fusion-wizard-desc">
+              为本次分析起一个便于识别的名称。
+            </Paragraph>
+            <Input
+              className="fusion-wizard-case-input"
+              size="large"
+              placeholder="例如：华南机电调查"
+              value={caseName}
+              disabled={phase !== "draft"}
+              onChange={(event) => setCaseName(event.target.value)}
+              onPressEnter={goNextFromStep1}
+              maxLength={120}
+              autoFocus
             />
-            <Paragraph type="secondary" style={{ marginBottom: 0 }}>{progress.message}</Paragraph>
+            <div className="fusion-wizard-actions">
+              <Button type="primary" size="large" icon={<RightOutlined />} onClick={goNextFromStep1}>
+                下一步
+              </Button>
+            </div>
           </div>
         ) : null}
-      </div>
 
-      <div className="fusion-flow-arrow" aria-hidden>
-        <ArrowDownOutlined />
-      </div>
+        {step === 2 ? (
+          <div className="fusion-wizard-body fusion-wizard-body-step2">
+            <Title level={3} className="fusion-wizard-title">请导入数据</Title>
+            <Paragraph type="secondary" className="fusion-wizard-desc">
+              选择数据来源并上传文件，可多次添加不同批次。完成后点击「开始导入」。
+            </Paragraph>
 
-      <div className={`fusion-flow-step app-card fusion-flow-linking${phase === "draft" ? " fusion-flow-step-pending" : ""}`}>
-        <Text className="fusion-flow-step-label">步骤 3</Text>
-        <Title level={5}>人物标识关联</Title>
-        {linkingCaseId ? (
-          <PersonLinkingPanel caseId={linkingCaseId} embedded initialAutoSetup onEnterCockpit={enterCockpit} />
-        ) : (
-          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            数据导入完成后，在此扫描候选标识、机器预关联，并从候选池确认人物归属。
-          </Paragraph>
-        )}
-      </div>
+            {phase === "importing" ? (
+              <div className="fusion-wizard-progress">
+                <Progress
+                  percent={progress.percent}
+                  status={progress.percent >= 100 ? "success" : "active"}
+                  strokeColor={{ "0%": "#ffb366", "100%": "#d94832" }}
+                  strokeWidth={12}
+                />
+                <Paragraph type="secondary" className="fusion-wizard-progress-text">
+                  {progress.message}
+                </Paragraph>
+              </div>
+            ) : (
+              <>
+                <div className="fusion-import-form-wrap fusion-wizard-import-form">{importForm.formElement}</div>
+                <Space wrap className="fusion-wizard-import-actions">
+                  <Button size="large" icon={<PlusOutlined />} disabled={running} onClick={() => void addBatch()}>
+                    添加本批数据
+                  </Button>
+                </Space>
 
-      <div className="fusion-flow-arrow" aria-hidden>
-        <ArrowDownOutlined />
-      </div>
+                {queue.length > 0 ? (
+                  <List
+                    className="fusion-import-queue fusion-wizard-import-queue"
+                    bordered
+                    header={<Text strong className="fusion-wizard-queue-title">待导入（{queue.length}）</Text>}
+                    dataSource={queue}
+                    renderItem={(item) => (
+                      <List.Item
+                        actions={[
+                          <Button
+                            key="remove"
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            disabled={running}
+                            onClick={() => removeBatch(item.id)}
+                          />,
+                        ]}
+                      >
+                        <Space wrap size="middle">
+                          <Tag color="volcano" className="fusion-wizard-queue-tag">{SOURCE_LABELS[item.values.source_type as SourceType]}</Tag>
+                          <Text className="fusion-wizard-queue-name">{item.values.batch_name || item.files[0]?.name}</Text>
+                          <Text type="secondary">{item.files.length} 个文件</Text>
+                        </Space>
+                      </List.Item>
+                    )}
+                  />
+                ) : null}
+              </>
+            )}
 
-      <div className="fusion-flow-step app-card fusion-flow-progress">
-        <Text className="fusion-flow-step-label">步骤 4</Text>
-        <Title level={5}>进入融合分析</Title>
-        {phase === "done" ? (
-          <>
-            <Progress percent={100} status="success" strokeColor={{ "0%": "#ffb366", "100%": "#d94832" }} />
-            <Paragraph style={{ marginBottom: 0 }}>人物关联已完成，已进入融合分析驾驶舱。</Paragraph>
-          </>
-        ) : phase === "linking" ? (
-          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            完成人物标识关联后，点击步骤 3 中的「进入融合分析驾驶舱」。
-          </Paragraph>
-        ) : (
-          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            完成导入与人物关联后，将自动进入融合分析驾驶舱。
-          </Paragraph>
-        )}
+            <div className="fusion-wizard-actions">
+              <Button size="large" icon={<LeftOutlined />} disabled={running || phase === "importing"} onClick={() => setStep(1)}>
+                上一步
+              </Button>
+              <Button
+                type="primary"
+                size="large"
+                loading={running}
+                disabled={phase === "importing" || !queue.length}
+                onClick={() => void startImport()}
+              >
+                开始导入
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

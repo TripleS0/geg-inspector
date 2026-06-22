@@ -20,6 +20,7 @@ import {
   BankOutlined,
   IdcardOutlined,
   MobileOutlined,
+  PartitionOutlined,
   PlusOutlined,
   ScanOutlined,
   ThunderboltOutlined,
@@ -89,6 +90,7 @@ function IdentifierTags({ links, onRemove }: { links: PersonLink[]; onRemove?: (
 export interface PersonLinkingPanelProps {
   caseId: number;
   embedded?: boolean;
+  wizardMode?: boolean;
   initialAutoSetup?: boolean;
   onEnterCockpit?: () => void;
   onStatsChange?: (stats: { personCount: number; linkedCount: number; pendingCount: number }) => void;
@@ -97,6 +99,7 @@ export interface PersonLinkingPanelProps {
 function PersonLinkingPanel({
   caseId,
   embedded = false,
+  wizardMode = false,
   initialAutoSetup = false,
   onEnterCockpit,
   onStatsChange,
@@ -388,14 +391,14 @@ function PersonLinkingPanel({
   const canEnterCockpit = stats.personCount > 0 && stats.linkedCount > 0;
 
   return (
-    <div className={embedded ? "person-linking-panel embedded" : "link-page"}>
+    <div className={`person-linking-panel${embedded ? " embedded" : ""}${wizardMode ? " wizard-mode" : ""}`}>
       <Card className={`app-card link-hero${embedded ? " link-hero-embedded" : ""}`} bordered={false}>
         <div className="link-hero-inner">
           <div>
             <Title level={4} style={{ margin: 0, color: "#fff" }}>
               人物标识关联
             </Title>
-            <Paragraph style={{ margin: "6px 0 0", color: "rgba(255,255,255,0.85)", maxWidth: 560 }}>
+            <Paragraph style={{ margin: "6px 0 0", color: "rgba(255,255,255,0.85)", maxWidth: 720 }}>
               按「姓名 · 手机 · 微信 · 银行卡」建立一人多标识关联矩阵，从候选池选择归属人物后用于融合分析。
             </Paragraph>
           </div>
@@ -409,11 +412,6 @@ function PersonLinkingPanel({
             <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
               新建人物
             </Button>
-            {onEnterCockpit ? (
-              <Button type="primary" ghost disabled={!canEnterCockpit} onClick={onEnterCockpit}>
-                进入融合分析驾驶舱
-              </Button>
-            ) : null}
           </Space>
         </div>
         <Row gutter={12} className="link-stats-row">
@@ -432,6 +430,28 @@ function PersonLinkingPanel({
           ))}
         </Row>
       </Card>
+
+      {onEnterCockpit ? (
+        <div className="link-enter-cockpit-bar">
+          <div className="link-enter-cockpit-copy">
+            <Text strong className="link-enter-cockpit-title">核对完成，进入融合分析</Text>
+            <Text type="secondary" className="link-enter-cockpit-desc">
+              已建 {stats.personCount} 人 · 已关联 {stats.linkedCount} 条标识
+              {stats.pendingCount > 0 ? ` · 仍有 ${stats.pendingCount} 条待处理（可稍后在驾驶舱继续）` : ""}
+            </Text>
+          </div>
+          <Button
+            type="primary"
+            size="large"
+            className="link-enter-cockpit-btn"
+            icon={<PartitionOutlined />}
+            disabled={!canEnterCockpit}
+            onClick={onEnterCockpit}
+          >
+            进入融合分析驾驶舱
+          </Button>
+        </div>
+      ) : null}
 
       <Card className="app-card link-section" bordered={false} title="关联结果矩阵（一人可多卡号 / 多手机号 / 多微信号）">
         <Table
