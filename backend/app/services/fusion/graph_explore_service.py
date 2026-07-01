@@ -513,28 +513,58 @@ class GraphExploreService:
         return next((c for c in candidates if c in nodes), "")
 
     def _find_paths(self, anchors: list[str], edges: dict[str, ExploreEdge], max_depth: int) -> list[dict[str, Any]]:
+        """Find anchor-to-anchor paths where every hop uses the same relation type."""
         start, target = anchors[0], anchors[1]
         adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
         edge_map = {edge.id: edge for edge in edges.values()}
         for edge in edges.values():
             adjacency[edge.source].append((edge.target, edge.id))
             adjacency[edge.target].append((edge.source, edge.id))
-        found: list[dict[str, Any]] = []
-        q: deque[tuple[str, list[str], list[str]]] = deque([(start, [start], [])])
-        while q and len(found) < 30:
-            node, path_nodes, path_edges = q.popleft()
+
+        found_raw: list[dict[str, Any]] = []
+        q: deque[tuple[str, list[str], list[str], str | None]] = deque([(start, [start], [], None)])
+        while q and len(found_raw) < 120:
+            node, path_nodes, path_edges, path_type = q.popleft()
             if len(path_edges) >= max_depth:
                 continue
             for nxt, edge_id in adjacency.get(node, []):
                 if nxt in path_nodes:
                     continue
+                edge = edge_map[edge_id]
+                if path_type is not None and edge.type != path_type:
+                    continue
+                next_type = path_type or edge.type
                 next_nodes = path_nodes + [nxt]
                 next_edges = path_edges + [edge_id]
                 if nxt == target:
-                    found.append({"id": f"path-{len(found) + 1}", "source_anchor": start, "target_anchor": target, "length": len(next_edges), "nodes": next_nodes, "edges": next_edges, "relation_types": sorted({edge_map[e].type for e in next_edges})})
+                    found_raw.append(
+                        {
+                            "source_anchor": start,
+                            "target_anchor": target,
+                            "length": len(next_edges),
+                            "nodes": next_nodes,
+                            "edges": next_edges,
+                            "relation_types": [next_type],
+                        }
+                    )
                 else:
-                    q.append((nxt, next_nodes, next_edges))
-        return found
+                    q.append((nxt, next_nodes, next_edges, next_type))
+
+        def path_weight(path: dict[str, Any]) -> float:
+            return float(sum(edge_map[edge_id].weight for edge_id in path["edges"]))
+
+        best: dict[tuple[tuple[str, ...], str], dict[str, Any]] = {}
+        for path in found_raw:
+            relation_type = path["relation_types"][0]
+            key = (tuple(path["nodes"]), relation_type)
+            previous = best.get(key)
+            if previous is None or path_weight(path) > path_weight(previous):
+                best[key] = path
+
+        found = sorted(best.values(), key=lambda item: (item["length"], -path_weight(item)))
+        for index, path in enumerate(found[:30], start=1):
+            path["id"] = f"path-{index}"
+        return found[:30]
 
     def _common_neighbors(self, anchors: list[str], edges: dict[str, ExploreEdge], nodes: dict[str, ExploreNode]) -> list[dict[str, Any]]:
         """两人共同关联的企业：仅统计双方均通过工商关系连到的企业节点。"""

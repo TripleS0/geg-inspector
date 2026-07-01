@@ -5,8 +5,8 @@ import { formatFusionAmount } from "./graphRecordUtils";
 export type BilateralFlowItem = {
   time: number;
   timeLabel: string;
-  fromIndex: 0 | 1;
-  toIndex: 0 | 1;
+  fromIndex: number;
+  toIndex: number;
   valueLabel: string;
   recordType: string;
   summary: string;
@@ -35,6 +35,67 @@ function namesMatch(a: string, b: string) {
   const right = normalizeName(b);
   if (!left || !right) return false;
   return left === right || left.includes(right) || right.includes(left);
+}
+
+function partyIndex(parties: string[], name?: string) {
+  if (!name) return -1;
+  return parties.findIndex((party) => namesMatch(party, name));
+}
+
+function isAdjacentHop(fromIndex: number, toIndex: number) {
+  return fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex && Math.abs(fromIndex - toIndex) === 1;
+}
+
+/** 根据 counterparty 推断记录属于路径上的哪一跳（相邻两节点） */
+function inferAdjacentHopPair(record: FusionRecord, parties: string[]): [number, number] | null {
+  const cpIdx = partyIndex(parties, record.counterparty);
+  if (cpIdx < 0) return null;
+
+  const candidates: Array<[number, number]> = [];
+  if (cpIdx > 0) candidates.push([cpIdx - 1, cpIdx]);
+  if (cpIdx < parties.length - 1) candidates.push([cpIdx, cpIdx + 1]);
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const hintA = partyIndex(parties, record.flow_party_a);
+  const hintB = partyIndex(parties, record.flow_party_b);
+  for (const pair of candidates) {
+    const [left, right] = pair;
+    if (hintA === left || hintA === right || hintB === left || hintB === right) {
+      return pair;
+    }
+  }
+  return candidates[0];
+}
+
+function resolveHopIndices(
+  record: FusionRecord,
+  parties: string[]
+): { fromIndex: number; toIndex: number } | null {
+  const idxA = partyIndex(parties, record.flow_party_a);
+  const idxB = partyIndex(parties, record.flow_party_b);
+  let left = -1;
+  let right = -1;
+
+  if (isAdjacentHop(idxA, idxB)) {
+    left = Math.min(idxA, idxB);
+    right = Math.max(idxA, idxB);
+  } else {
+    const pair = parties.length === 2 ? ([0, 1] as [number, number]) : inferAdjacentHopPair(record, parties);
+    if (!pair) {
+      if (parties.length === 2) {
+        left = 0;
+        right = 1;
+      } else {
+        return null;
+      }
+    } else {
+      [left, right] = pair;
+    }
+  }
+
+  const flow = inferBilateralFlow(record, parties[left], parties[right]);
+  return flow === "a_to_b" ? { fromIndex: left, toIndex: right } : { fromIndex: right, toIndex: left };
 }
 
 export function inferBilateralFlow(
@@ -150,27 +211,27 @@ function arrowPolygon(x: number, y: number, direction: "left" | "right", color: 
   };
 }
 
-export function buildBilateralFlowItems(
-  records: FusionRecord[],
-  partyA: string,
-  partyB: string
-): BilateralFlowItem[] {
+export function buildBilateralFlowItems(records: FusionRecord[], partiesOrA: string[] | string, maybePartyB?: string): BilateralFlowItem[] {
+  const parties = Array.isArray(partiesOrA) ? partiesOrA : [partiesOrA, maybePartyB || ""];
+
   return records
     .map((record) => {
       const time = parseRecordTime(record.time);
-      const flow = inferBilateralFlow(record, partyA, partyB);
+      const hop = resolveHopIndices(record, parties);
+      if (!hop) return null;
+
       return {
         time,
         timeLabel: record.time?.replace("T", " ").slice(0, 19) || "—",
-        fromIndex: flow === "a_to_b" ? 0 : 1,
-        toIndex: flow === "a_to_b" ? 1 : 0,
+        fromIndex: hop.fromIndex,
+        toIndex: hop.toIndex,
         valueLabel: formatRecordValue(record),
         recordType: record.record_type,
         summary: record.summary || record.title || "",
         magnitude: recordMagnitude(record),
       } satisfies BilateralFlowItem;
     })
-    .filter((item) => item.time > 0)
+    .filter((item): item is BilateralFlowItem => item !== null && item.time > 0)
     .sort((a, b) => a.time - b.time);
 }
 
@@ -180,16 +241,18 @@ export function bilateralFlowSlotCount(items: BilateralFlowItem[]) {
 
 export function buildBilateralFlowChartOption(
   items: BilateralFlowItem[],
-  partyA: string,
-  partyB: string
+  partiesOrA: string[] | string,
+  maybePartyB?: string
 ): EChartsOption | null {
-  if (!items.length || !partyA || !partyB) return null;
+  const parties = Array.isArray(partiesOrA) ? partiesOrA.filter(Boolean) : [partiesOrA, maybePartyB || ""].filter(Boolean);
+  if (!items.length || parties.length < 2) return null;
 
   const slots = buildTimeSlots(items);
   const slotLabels = slots.map((slot) => slot.label);
   const magnitudes = items.map((item) => item.magnitude);
   const minMag = Math.min(...magnitudes);
   const maxMag = Math.max(...magnitudes);
+  const lastPartyIndex = parties.length - 1;
 
   const recordSlots = slots.filter((slot): slot is Extract<TimeSlot, { kind: "record" }> => slot.kind === "record");
 
@@ -200,7 +263,7 @@ export function buildBilateralFlowChartOption(
     grid: { left: 118, right: 118, top: 52, bottom: 28, containLabel: false },
     xAxis: {
       type: "category",
-      data: [partyA, partyB],
+      data: parties,
       position: "top",
       axisLine: { show: false },
       axisTick: { show: false },
@@ -211,7 +274,8 @@ export function buildBilateralFlowChartOption(
         margin: 14,
         formatter: (value: string, index: number) => {
           const short = value.length > 10 ? `${value.slice(0, 9)}…` : value;
-          return `{p${index}|${short}}`;
+          const token = index === 0 ? "p0" : index === lastPartyIndex ? "p1" : "pm";
+          return `{${token}|${short}}`;
         },
         rich: {
           p0: {
@@ -224,6 +288,13 @@ export function buildBilateralFlowChartOption(
           p1: {
             color: "#b45309",
             backgroundColor: "rgba(245, 158, 11, 0.12)",
+            padding: [6, 10],
+            borderRadius: 6,
+            fontWeight: 700,
+          },
+          pm: {
+            color: "#047857",
+            backgroundColor: "rgba(16, 185, 129, 0.12)",
             padding: [6, 10],
             borderRadius: 6,
             fontWeight: 700,
@@ -269,8 +340,8 @@ export function buildBilateralFlowChartOption(
         const payload = (params as { data?: { item?: BilateralFlowItem } }).data;
         const item = payload?.item;
         if (!item) return "";
-        const from = item.fromIndex === 0 ? partyA : partyB;
-        const to = item.toIndex === 0 ? partyA : partyB;
+        const from = parties[item.fromIndex] || "起点";
+        const to = parties[item.toIndex] || "终点";
         const typeLabel =
           item.recordType === "bank_txn" ? "银行" : item.recordType === "wechat" ? "微信" : "通讯";
         return [
@@ -293,12 +364,14 @@ export function buildBilateralFlowChartOption(
           if (slotCount === 0) return null;
 
           const topLeft = api.coord([0, 0]);
-          const bottomRight = api.coord([1, slotCount - 1]);
-          const colWidth = Math.abs(api.coord([1, 0])[0] - api.coord([0, 0])[0]);
+          const bottomRight = api.coord([lastPartyIndex, slotCount - 1]);
+          const stepWidth = parties.length > 1 ? Math.abs(api.coord([1, 0])[0] - api.coord([0, 0])[0]) : 180;
+          const colWidth = Math.min(220, stepWidth * 0.86);
           const children: Array<Record<string, unknown>> = [];
 
-          [0, 1].forEach((col) => {
+          parties.forEach((_party, col) => {
             const x = api.coord([col, 0])[0] - colWidth / 2;
+            const colorIndex = col === 0 ? 0 : col === lastPartyIndex ? 1 : col % 2;
             children.push({
               type: "rect",
               shape: {
@@ -309,8 +382,8 @@ export function buildBilateralFlowChartOption(
                 r: 10,
               },
               style: {
-                fill: PARTY_COLUMN_BG[col],
-                stroke: PARTY_COLUMN_BORDER[col],
+                fill: PARTY_COLUMN_BG[colorIndex],
+                stroke: PARTY_COLUMN_BORDER[colorIndex],
                 lineWidth: 1,
               },
             });
@@ -320,7 +393,7 @@ export function buildBilateralFlowChartOption(
             if (slot.kind !== "gap") return;
             const y = api.coord([0, slot.slotIndex])[1];
             const x0 = api.coord([0, slot.slotIndex])[0] - colWidth / 2;
-            const x1 = api.coord([1, slot.slotIndex])[0] + colWidth / 2;
+            const x1 = api.coord([lastPartyIndex, slot.slotIndex])[0] + colWidth / 2;
             const midX = (x0 + x1) / 2;
             children.push({
               type: "group",
@@ -368,7 +441,7 @@ export function buildBilateralFlowChartOption(
           const toPoint = api.coord([item.toIndex, slot.slotIndex]);
           const color = TYPE_COLORS[item.recordType] || "#64748b";
           const lineWidth = magnitudeToLineWidth(item.magnitude, minMag, maxMag);
-          const direction: "left" | "right" = item.toIndex === 1 ? "right" : "left";
+          const direction: "left" | "right" = item.toIndex > item.fromIndex ? "right" : "left";
           const arrowSize = 7 + lineWidth * 0.35;
           const shorten = arrowSize + 6;
           const dx = toPoint[0] - fromPoint[0];
