@@ -560,19 +560,22 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   const graphChartRef = useRef<ReactECharts>(null);
   const { openRecords, drawers } = useFusionRecordDrawers(caseId);
 
-  const refreshCases = useCallback(async () => {
+  const refreshCases = useCallback(async (preferredId?: number | null) => {
     const res = await api.listCases();
     setCases(res.items);
     const paramCase = searchParams.get("case");
     const stored = localStorage.getItem(CASE_STORAGE_KEY);
-    const preferred = paramCase ? Number(paramCase) : stored ? Number(stored) : res.items[0]?.case_id ?? null;
+    const fallback = paramCase ? Number(paramCase) : stored ? Number(stored) : res.items[0]?.case_id ?? null;
+    const preferred = preferredId ?? fallback;
     const next = res.items.some((item) => item.case_id === preferred) ? preferred : res.items[0]?.case_id ?? null;
     setCaseId(next);
+    setObservations(next ? loadGraphObservations(next) : []);
     setData(null);
     setSelectedNode(null);
     setSelectedEdge(null);
     setAnchorCenter(null);
     setAnchorTarget(null);
+    setPersons([]);
   }, [searchParams]);
 
   useEffect(() => {
@@ -580,8 +583,9 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   }, [refreshCases]);
 
   useEffect(() => {
-    const onCaseChanged = () => {
-      void refreshCases().catch((err) => message.error((err as Error).message));
+    const onCaseChanged = (event: Event) => {
+      const nextCaseId = (event as CustomEvent<{ caseId?: number | null }>).detail?.caseId ?? null;
+      void refreshCases(nextCaseId).catch((err) => message.error((err as Error).message));
     };
     window.addEventListener(CASE_CHANGED_EVENT, onCaseChanged);
     return () => window.removeEventListener(CASE_CHANGED_EVENT, onCaseChanged);
@@ -591,7 +595,10 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   const hasBoundBatch = (selectedCase?.batch_count ?? 0) > 0;
 
   useEffect(() => {
-    if (!caseId) return;
+    if (!caseId) {
+      setObservations([]);
+      return;
+    }
     localStorage.setItem(CASE_STORAGE_KEY, String(caseId));
     setObservations(loadGraphObservations(caseId));
     if (searchParams.get("case") !== String(caseId)) {
@@ -602,18 +609,19 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   }, [caseId, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!caseId || !hasBoundBatch) {
-      setData(null);
-      setPersons([]);
-      setAnchorCenter(null);
-      setAnchorTarget(null);
-      setSelectedNode(null);
-      setSelectedEdge(null);
-      return;
-    }
     setData(null);
     setSelectedNode(null);
     setSelectedEdge(null);
+    setSelectedPathEdgeIds(new Set());
+    setActivePath(null);
+    setViewMode("all");
+
+    if (!caseId || !hasBoundBatch) {
+      setPersons([]);
+      setAnchorCenter(null);
+      setAnchorTarget(null);
+      return;
+    }
     void api
       .listCasePersons(caseId)
       .then((res) => {
@@ -806,7 +814,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   );
 
   const chartOption = useMemo(() => {
-    if (!data?.nodes.length) return null;
+    if (!data?.nodes.length || !caseId || !hasBoundBatch) return null;
     const visibleNodeIds = new Set<string>();
     data.edges.forEach((edge) => {
       if (visibleEdgeIds.has(edge.id)) {
@@ -1218,6 +1226,12 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
 
   const showHero = !cockpitMode && !embedded;
 
+  const graphEmptyDescription = !caseId
+    ? "请先选择案件"
+    : !hasBoundBatch
+      ? "当前案件无绑定批次，暂无图谱数据"
+      : "请在筛选区选择中心对象并开始分析";
+
   return (
     <div className={`graph-explore-page${cockpitMode ? " graph-explore-cockpit" : ""}`}>
       {showHero ? (
@@ -1391,7 +1405,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                 title={
                   <Space>
                     <NodeIndexOutlined />
-                    关系图谱
+                    {caseId ? `关系图谱 · ${selectedCase?.case_name || "未命名案件"}` : "关系图谱"}
                   </Space>
                 }
                 extra={
@@ -1461,13 +1475,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                   </>
                 ) : (
                   <div className="graph-empty" style={{ minHeight: graphFullscreen ? "calc(100vh - 148px)" : 620, flex: graphFullscreen ? 1 : undefined }}>
-                    <Empty
-                      description={
-                        !hasBoundBatch
-                          ? "当前案件无绑定批次，暂无图谱数据"
-                          : "请在筛选区选择中心对象并开始分析"
-                      }
-                    />
+                    <Empty description={graphEmptyDescription} />
                     <div className="graph-canvas-footer graph-canvas-footer--empty">{extensionLevelControl}</div>
                   </div>
                 )}
@@ -1492,7 +1500,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                 <List
                   size="small"
                   dataSource={observations}
-                  locale={{ emptyText: "暂无观察对象，选中节点或关系后加入" }}
+                  locale={{ emptyText: caseId ? "暂无观察对象，选中节点或关系后加入" : "请选择案件后查看观察区" }}
                   renderItem={(item) => (
                     <List.Item
                       className="graph-observation-item"
