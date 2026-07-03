@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "正在启动 DataFusionX（使用国内镜像加速）..."
+echo "正在启动 DataFusionX..."
 
-docker compose -f docker-compose.yml -f docker-compose.mirror.cn.yml up -d --build
+if docker compose up -d --no-build; then
+  :
+else
+  echo "未找到镜像，使用国内镜像加速构建（首次运行或更新后）..."
+  docker compose -f docker-compose.yml -f docker-compose.mirror.cn.yml up -d --build
+fi
 
 echo "系统已启动"
 

@@ -23,7 +23,7 @@ for item in \
   README-DOCKER.md \
   docker-compose.yml \
   docker-compose.mirror.cn.yml \
-  start.bat stop.bat start-mirror.bat \
+  start.bat stop.bat start-mirror.bat rebuild.bat rebuild-mirror.bat \
   start.sh stop.sh start-mirror.sh \
   requirements.txt \
   .dockerignore \
@@ -42,6 +42,17 @@ rm -rf \
   "$STAGING/backend/app/__pycache__"
 
 mkdir -p "$STAGING/data"
+
+# Windows cmd.exe requires CRLF in .bat files
+python3 - <<'PY'
+from pathlib import Path
+staging = Path("$STAGING")
+for name in ("start.bat", "stop.bat", "start-mirror.bat", "rebuild.bat", "rebuild-mirror.bat"):
+    path = staging / name
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+        path.write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+PY
 
 (
   cd "$OUT_DIR"

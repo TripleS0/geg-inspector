@@ -142,6 +142,8 @@ class CommercialAnalysisFilterRequest(BaseModel):
     amount_min: Optional[float] = None
     amount_max: Optional[float] = None
     only_winners: bool = False
+    start_time: str = ""
+    end_time: str = ""
 
     def to_filters(self) -> CommercialAnalysisFilters:
         if hasattr(self, "model_dump"):

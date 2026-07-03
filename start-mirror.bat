@@ -1,14 +1,18 @@
 @echo off
-echo 正在启动 DataFusionX（使用国内镜像加速）...
+echo Starting DataFusionX...
 
-docker compose -f docker-compose.yml -f docker-compose.mirror.cn.yml up -d --build
+docker compose up -d --no-build
 if errorlevel 1 (
-    echo 启动失败。若仍超时，请配置 Docker Desktop 镜像加速，详见 README-DOCKER.md
-    pause
-    exit /b 1
+    echo Images not found. Building with China mirror ^(first run or after update^)...
+    docker compose -f docker-compose.yml -f docker-compose.mirror.cn.yml up -d --build
+    if errorlevel 1 (
+        echo Startup failed. See README-DOCKER.md for Docker mirror setup.
+        pause
+        exit /b 1
+    )
 )
 
-echo 系统已启动
+echo System started.
 start http://localhost:8080
 
 pause

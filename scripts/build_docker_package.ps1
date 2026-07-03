@@ -14,7 +14,7 @@ $Items = @(
     "README-DOCKER.md",
     "docker-compose.yml",
     "docker-compose.mirror.cn.yml",
-    "start.bat", "stop.bat", "start-mirror.bat",
+    "start.bat", "stop.bat", "start-mirror.bat", "rebuild.bat", "rebuild-mirror.bat",
     "start.sh", "stop.sh", "start-mirror.sh",
     "requirements.txt",
     ".dockerignore",
@@ -40,6 +40,15 @@ foreach ($path in $strip) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Staging "data") | Out-Null
+
+foreach ($bat in @("start.bat", "stop.bat", "start-mirror.bat", "rebuild.bat", "rebuild-mirror.bat")) {
+    $path = Join-Path $Staging $bat
+    if (Test-Path $path) {
+        $text = [IO.File]::ReadAllText($path)
+        $text = $text -replace "`r`n", "`n" -replace "`n", "`r`n"
+        [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+    }
+}
 
 $ZipPath = Join-Path $OutDir $ZipName
 if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }

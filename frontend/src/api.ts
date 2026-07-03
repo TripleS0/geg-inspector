@@ -154,6 +154,8 @@ export interface CommercialAnalysisFilter {
   amount_min?: number | null;
   amount_max?: number | null;
   only_winners?: boolean;
+  start_time?: string;
+  end_time?: string;
 }
 
 export interface CommercialAnalysisRecord {

@@ -14,6 +14,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 _ENTERPRISE_HINTS = ("公司", "有限", "集团", "商行", "企业", "中心", "部门", "银行")
 _NAME_TYPES = frozenset({"person_name", "wechat_name"})
 _PROPAGATE_TYPES = frozenset({"phone", "bank_acct", "bank_card", "id_no"})
+_SOURCE_PRIORITY = {"enterprise": 3, "bank": 2, "commercial": 1, "wechat": 1, "telecom": 1}
 
 
 @dataclass
@@ -133,6 +134,19 @@ class AutoLinkService:
             if self._try_link(case_id, cand["candidate_id"], person_id, linked_ids):
                 result.links_created += 1
 
+        # Pass 6: enterprise -> legal person (法人优先，避免挂到股东/监事)
+        name_to_person = self._refresh_name_to_person(case_id, name_to_person)
+        for cand in candidates:
+            if cand["candidate_id"] in linked_ids:
+                continue
+            if str(cand["identifier_type"]) != "enterprise_name":
+                continue
+            person_id = self._enterprise_owner_person_id(case_id, cand, name_to_person)
+            if person_id is None:
+                continue
+            if self._try_link(case_id, cand["candidate_id"], person_id, linked_ids):
+                result.links_created += 1
+
         result.person_names = sorted(
             {p.display_name for p in self._person_links.list_persons(case_id)}
         )
@@ -209,6 +223,10 @@ class AutoLinkService:
                 norm = normalize_identifier("person_name", str(rows[0][0] or ""))
                 if norm:
                     return norm
+        if table == "std_enterprise_profile" and isinstance(pk, dict) and pk.get("enterprise_id") is not None:
+            owner = self._enterprise_legal_person_norm(int(pk["enterprise_id"]))
+            if owner:
+                return owner
         if table.startswith("raw_") and isinstance(pk, dict) and pk.get("raw_id") is not None:
             owner = self._raw_owner_name(table, int(pk["raw_id"]))
             if owner:
@@ -227,6 +245,65 @@ class AutoLinkService:
                 if norm:
                     return norm
         return ""
+
+    def _enterprise_legal_person_norm(self, enterprise_id: int) -> str:
+        rows = self._client.query_all(
+            "SELECT legal_person FROM std_enterprise_profile WHERE enterprise_id=? LIMIT 1;",
+            (enterprise_id,),
+        )
+        if not rows:
+            return ""
+        return normalize_identifier("person_name", str(rows[0][0] or ""))
+
+    def _enterprise_owner_person_id(
+        self,
+        case_id: int,
+        cand: dict,
+        name_to_person: dict[str, int],
+    ) -> int | None:
+        source_ref = cand.get("source_ref") or {}
+        table = str(source_ref.get("table") or "")
+        pk = source_ref.get("pk") or {}
+        if table == "std_enterprise_profile" and isinstance(pk, dict):
+            enterprise_id = pk.get("enterprise_id")
+            if enterprise_id is not None:
+                legal_norm = self._enterprise_legal_person_norm(int(enterprise_id))
+                if legal_norm:
+                    person_id = name_to_person.get(legal_norm)
+                    if person_id is not None:
+                        return person_id
+
+        enterprise_norm = str(cand.get("identifier_norm") or "")
+        if not enterprise_norm:
+            return None
+        legal_norm = self._legal_person_for_enterprise_norm(case_id, enterprise_norm)
+        if not legal_norm:
+            return None
+        return name_to_person.get(legal_norm)
+
+    def _legal_person_for_enterprise_norm(self, case_id: int, enterprise_norm: str) -> str:
+        rows = self._client.query_all(
+            """
+            SELECT p.legal_person
+            FROM std_enterprise_profile p
+            JOIN rel_case_batch b ON b.import_batch_id = p.import_batch_id
+            WHERE b.case_id=? AND p.enterprise_name_norm=?
+            ORDER BY p.enterprise_id
+            LIMIT 1;
+            """,
+            (case_id, enterprise_norm),
+        )
+        if not rows:
+            return ""
+        return normalize_identifier("person_name", str(rows[0][0] or ""))
+
+    def _refresh_name_to_person(self, case_id: int, name_to_person: dict[str, int]) -> dict[str, int]:
+        refreshed = dict(name_to_person)
+        for person in self._person_links.list_persons(case_id):
+            norm = normalize_identifier("person_name", person.display_name)
+            if norm:
+                refreshed[norm] = person.person_id
+        return refreshed
 
     def _raw_owner_name(self, table: str, raw_id: int) -> str:
         info = self._client.query_all(f"PRAGMA table_info({self._client.quote_ident(table)});")
