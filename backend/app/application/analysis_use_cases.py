@@ -12,6 +12,10 @@ from app.services.integration.commercial.analysis_service import (
     CommercialAnalysisFilters,
     CommercialAnalysisService,
 )
+from app.services.integration.commercial.co_bid_analysis_service import (
+    CoBidAnalysisParams,
+    CommercialCoBidAnalysisService,
+)
 from app.services.integration.telecom.analysis_service import (
     TelecomAnalysisFilters,
     TelecomAnalysisService,
@@ -213,6 +217,13 @@ class CommercialAnalysisUseCase:
         filters: CommercialAnalysisFilters | None = None,
     ) -> dict[str, object]:
         return self._service.query_records(batch_id, filters)
+
+    def analyze_co_bidding(
+        self,
+        batch_id: str,
+        params: CoBidAnalysisParams,
+    ) -> dict[str, object]:
+        return CommercialCoBidAnalysisService(self._client).analyze(batch_id, params)
 
 
 class WechatAnalysisUseCase:

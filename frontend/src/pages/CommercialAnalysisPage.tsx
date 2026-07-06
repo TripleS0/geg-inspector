@@ -1,24 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AutoComplete,
   Button,
   Card,
   Col,
   DatePicker,
+  Drawer,
   Form,
-  Input,
   InputNumber,
   Progress,
   Row,
+  Segmented,
   Select,
   Space,
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
 import type { TableColumnsType } from "antd";
-import { SearchOutlined } from "@ant-design/icons";
+import { QuestionCircleOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -26,7 +29,11 @@ import {
   BatchInfo,
   batchLabel,
   CommercialAnalysisFilter,
+  CommercialAnalysisRecord,
   CommercialAnalysisResponse,
+  CommercialCoBidAnalysisResponse,
+  CommercialCoBidCompanion,
+  CommercialCoBidInquiry,
   pollTask,
 } from "../api";
 import {
@@ -36,6 +43,8 @@ import {
 import { chartPair, chartPalette } from "../theme";
 
 type CommercialFilterForm = CommercialAnalysisFilter & AnalysisDateTimeFormFields;
+
+type AnalysisViewMode = "stats" | "cobid";
 
 interface CompanySummaryRow {
   company_name: string;
@@ -61,6 +70,55 @@ const RISK_LEVEL_COLORS: Record<string, string> = {
   high: "red",
   medium: "orange",
   low: "gold",
+};
+
+const PATTERN_COLORS: Record<string, string> = {
+  高频陪标: "blue",
+  轮流中标: "red",
+};
+
+const PATTERN_DEFINITIONS: Record<string, string> = {
+  高频陪标:
+    "与目标企业在大量询价项目中反复同场出现，同场次数及占目标参标项目的比例超过阈值，疑似固定搭档一起参标。",
+  轮流中标:
+    "双方在同场询价中交替成为唯一中标方，中标轮换规律明显，疑似人为分配中标结果。",
+};
+
+function PatternHelpTag({ pattern }: { pattern: string }) {
+  return (
+    <Tooltip title={PATTERN_DEFINITIONS[pattern] || pattern}>
+      <Tag color={PATTERN_COLORS[pattern] || "default"} className="commercial-pattern-tag">
+        {pattern}
+        <QuestionCircleOutlined className="commercial-pattern-help-icon" />
+      </Tag>
+    </Tooltip>
+  );
+}
+
+type SharedWinOutcome = "target" | "partner" | "other" | "none";
+
+function classifySharedOutcome(
+  inquiry: CommercialCoBidInquiry,
+  partnerCompany: string,
+): SharedWinOutcome {
+  if (inquiry.target_won) return "target";
+  if (inquiry.winners.some((w) => w === partnerCompany || w.includes(partnerCompany))) return "partner";
+  if (!inquiry.winners.length) return "none";
+  return "other";
+}
+
+const OUTCOME_LABELS: Record<SharedWinOutcome, string> = {
+  target: "目标中标",
+  partner: "对方中标",
+  other: "第三方中标",
+  none: "无中标/流标",
+};
+
+const OUTCOME_COLORS: Record<SharedWinOutcome, string> = {
+  target: chartPalette[1],
+  partner: chartPalette[4],
+  other: chartPalette[6],
+  none: "#c9cdd4",
 };
 
 function riskLevelLabel(level: string) {
@@ -133,15 +191,30 @@ function CommercialAnalysisPage() {
   const [records, setRecords] = useState<CommercialAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [companySearch, setCompanySearch] = useState("");
+  const [viewMode, setViewMode] = useState<AnalysisViewMode>("stats");
   const [riskLevelFilter, setRiskLevelFilter] = useState<string | undefined>();
   const [sortState, setSortState] = useState(DEFAULT_SORT);
   const [tablePage, setTablePage] = useState(1);
   const [tablePageSize, setTablePageSize] = useState(20);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailCompany, setDetailCompany] = useState<CompanySummaryRow | null>(null);
+  const [detailRecords, setDetailRecords] = useState<CommercialAnalysisRecord[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailDrawerPage, setDetailDrawerPage] = useState(1);
+  const [detailDrawerPageSize, setDetailDrawerPageSize] = useState(20);
+  const [coBidLoading, setCoBidLoading] = useState(false);
+  const [coBidResult, setCoBidResult] = useState<CommercialCoBidAnalysisResponse | null>(null);
+  const [coBidDrawerOpen, setCoBidDrawerOpen] = useState(false);
+  const [coBidDrawerCompanion, setCoBidDrawerCompanion] = useState<CommercialCoBidCompanion | null>(null);
+  const [coBidDrawerPage, setCoBidDrawerPage] = useState(1);
+  const [coBidDrawerPageSize, setCoBidDrawerPageSize] = useState(10);
+  const [coBidCompanionPage, setCoBidCompanionPage] = useState(1);
+  const [coBidCompanionPageSize, setCoBidCompanionPageSize] = useState(10);
+  const coBidChartRef = useRef<React.ComponentRef<typeof ReactECharts>>(null);
 
   useEffect(() => {
     setTablePage(1);
-  }, [companySearch, riskLevelFilter]);
+  }, [riskLevelFilter, viewMode]);
 
   useEffect(() => {
     void (async () => {
@@ -160,10 +233,13 @@ function CommercialAnalysisPage() {
   useEffect(() => {
     if (!batchId) return;
     setSearchParams({ batch: batchId });
-    setCompanySearch("");
     setRiskLevelFilter(undefined);
     setSortState(DEFAULT_SORT);
     setTablePage(1);
+    setViewMode("stats");
+    setDetailOpen(false);
+    setDetailCompany(null);
+    setCoBidResult(null);
     void api.commercialAnalysisFilterOptions(batchId).then(setFilterOptions).catch(() => setFilterOptions({}));
     void runQuery();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -172,6 +248,8 @@ function CommercialAnalysisPage() {
   const runQuery = async () => {
     if (!batchId) return;
     setLoading(true);
+    setDetailOpen(false);
+    setDetailCompany(null);
     try {
       const values = await filter.validateFields();
       const data = await api.commercialAnalysisRecords(batchId, serializeAnalysisDateTimeFilters(values || {}));
@@ -208,11 +286,7 @@ function CommercialAnalysisPage() {
   );
 
   const filteredCompanySummary = useMemo(() => {
-    const keyword = companySearch.trim().toLowerCase();
     return companySummary.filter((row) => {
-      if (keyword && !String(row.company_name || "").toLowerCase().includes(keyword)) {
-        return false;
-      }
       if (riskLevelFilter === "__none__") {
         return !row.risk_level;
       }
@@ -221,7 +295,7 @@ function CommercialAnalysisPage() {
       }
       return true;
     });
-  }, [companySummary, companySearch, riskLevelFilter]);
+  }, [companySummary, riskLevelFilter]);
 
   const sortedCompanySummary = useMemo(() => {
     const rows = [...filteredCompanySummary];
@@ -233,6 +307,349 @@ function CommercialAnalysisPage() {
     });
     return rows;
   }, [filteredCompanySummary, sortState]);
+
+  const openCompanyDetail = useCallback(
+    async (row: CompanySummaryRow) => {
+      if (!batchId) return;
+      setDetailCompany(row);
+      setDetailOpen(true);
+      setDetailDrawerPage(1);
+      setDetailLoading(true);
+      setDetailRecords([]);
+      try {
+        const values = filter.getFieldsValue();
+        const data = await api.commercialAnalysisRecords(
+          batchId,
+          serializeAnalysisDateTimeFilters({
+            ...values,
+            company_name: row.company_name,
+            only_winners: true,
+          }),
+        );
+        const wins = data.records
+          .filter((r) => r.is_winner)
+          .sort(
+            (a, b) =>
+              Number(b.win_amount || 0) - Number(a.win_amount || 0) ||
+              String(a.inquiry_no).localeCompare(String(b.inquiry_no), "zh-CN"),
+          );
+        setDetailRecords(wins);
+      } catch (err) {
+        message.error((err as Error).message);
+        setDetailOpen(false);
+        setDetailCompany(null);
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [batchId, filter],
+  );
+
+  const runCoBidAnalysis = useCallback(
+    async (companyName?: string) => {
+      if (!batchId) return;
+      const values = filter.getFieldsValue();
+      const target = (companyName || values.company_name || "").trim();
+      if (!target) {
+        message.warning("请在筛选条件中填写目标企业名称");
+        return;
+      }
+      if (companyName) {
+        filter.setFieldValue("company_name", companyName);
+      }
+      setCoBidLoading(true);
+      try {
+        const dateFilters = serializeAnalysisDateTimeFilters(values || {});
+        const data = await api.commercialCoBidAnalysis(batchId, {
+          company_name: target,
+          purchaser: values.purchaser,
+          start_time: dateFilters.start_time,
+          end_time: dateFilters.end_time,
+        });
+        setCoBidResult(data);
+        if (!data.participation_count) {
+          message.info(data.description || "未找到参标记录");
+        }
+      } catch (err) {
+        message.error((err as Error).message);
+        setCoBidResult(null);
+      } finally {
+        setCoBidLoading(false);
+      }
+    },
+    [batchId, filter],
+  );
+
+  const runMainQuery = async () => {
+    if (viewMode === "cobid") {
+      await runCoBidAnalysis();
+      return;
+    }
+    await runQuery();
+  };
+
+  const switchToCoBid = (companyName: string) => {
+    filter.setFieldValue("company_name", companyName);
+    setViewMode("cobid");
+    void runCoBidAnalysis(companyName);
+  };
+
+  const openCoBidCompanionDrawer = useCallback(
+    (companion: CommercialCoBidCompanion) => {
+      setCoBidDrawerCompanion(companion);
+      setCoBidDrawerPage(1);
+      setCoBidDrawerOpen(true);
+    },
+    [],
+  );
+
+  const openCoBidRelationByNorm = useCallback(
+    (partnerNorm: string) => {
+      if (!coBidResult || partnerNorm === coBidResult.target_company_norm) return;
+      const companion = coBidResult.companions.find((row) => row.company_norm === partnerNorm);
+      if (companion) openCoBidCompanionDrawer(companion);
+    },
+    [coBidResult, openCoBidCompanionDrawer],
+  );
+
+  const handleCoBidGraphClick = useCallback(
+    (params: { dataType?: string; data?: { id?: string; source?: string; target?: string } }) => {
+      const targetNorm = coBidResult?.target_company_norm;
+      if (!targetNorm || !params.data) return;
+      if (params.dataType === "edge") {
+        const partner =
+          params.data.source === targetNorm ? params.data.target : params.data.source;
+        if (partner) openCoBidRelationByNorm(String(partner));
+        return;
+      }
+      const nodeId = params.data.id;
+      if (nodeId && nodeId !== targetNorm) {
+        openCoBidRelationByNorm(String(nodeId));
+      }
+    },
+    [coBidResult, openCoBidRelationByNorm],
+  );
+
+  const coBidSharedInquiries = useMemo(() => {
+    if (!coBidResult || !coBidDrawerCompanion) return [] as CommercialCoBidInquiry[];
+    const keys = new Set(coBidDrawerCompanion.shared_inquiry_nos);
+    return coBidResult.inquiries.filter((row) => keys.has(row.inquiry_no));
+  }, [coBidResult, coBidDrawerCompanion]);
+
+  const coBidDrawerCharts = useMemo(() => {
+    if (!coBidDrawerCompanion || !coBidResult) {
+      return { pieOption: null, compareOption: null };
+    }
+    const partnerName = coBidDrawerCompanion.company_name;
+    const outcomes: Record<SharedWinOutcome, number> = {
+      target: 0,
+      partner: 0,
+      other: 0,
+      none: 0,
+    };
+    for (const inquiry of coBidSharedInquiries) {
+      outcomes[classifySharedOutcome(inquiry, partnerName)] += 1;
+    }
+    const pieOption = {
+      color: Object.values(OUTCOME_COLORS),
+      tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
+      legend: { bottom: 0, type: "scroll" },
+      series: [
+        {
+          type: "pie",
+          radius: ["42%", "68%"],
+          center: ["50%", "44%"],
+          data: (Object.keys(outcomes) as SharedWinOutcome[])
+            .filter((key) => outcomes[key] > 0)
+            .map((key) => ({ name: OUTCOME_LABELS[key], value: outcomes[key] })),
+          label: { formatter: "{b}\n{d}%" },
+        },
+      ],
+    };
+    const compareOption = {
+      color: [chartPalette[1], chartPalette[4], chartPalette[6]],
+      tooltip: { trigger: "axis" },
+      grid: { left: 12, right: 12, top: 24, bottom: 28, containLabel: true },
+      xAxis: { type: "category", data: ["目标中标", "对方中标", "双方未中", "第三方中标"] },
+      yAxis: { type: "value", minInterval: 1 },
+      series: [
+        {
+          type: "bar",
+          barMaxWidth: 48,
+          data: [
+            coBidDrawerCompanion.target_wins_together,
+            coBidDrawerCompanion.partner_wins_together,
+            coBidDrawerCompanion.both_lose_together,
+            coBidDrawerCompanion.other_wins_together,
+          ],
+          itemStyle: { borderRadius: [6, 6, 0, 0] },
+        },
+      ],
+    };
+    return { pieOption, compareOption };
+  }, [coBidDrawerCompanion, coBidResult, coBidSharedInquiries]);
+
+  const coBidDrawerInquiryColumns = useMemo<TableColumnsType<CommercialCoBidInquiry>>(
+    () => [
+      { title: "询价单号", dataIndex: "inquiry_no", width: 130, ellipsis: true },
+      { title: "日期", dataIndex: "inquiry_time", width: 100, render: (v: string) => v || "-" },
+      { title: "采购单位", dataIndex: "purchaser", ellipsis: true },
+      {
+        title: "中标方",
+        dataIndex: "winners",
+        width: 140,
+        ellipsis: true,
+        render: (list: string[]) => (list.length ? list.join("、") : "无"),
+      },
+      {
+        title: "同场结果",
+        key: "outcome",
+        width: 100,
+        render: (_v, row) => {
+          if (!coBidDrawerCompanion) return "-";
+          const outcome = classifySharedOutcome(row, coBidDrawerCompanion.company_name);
+          return <Tag color={outcome === "target" ? "green" : outcome === "partner" ? "orange" : "default"}>{OUTCOME_LABELS[outcome]}</Tag>;
+        },
+      },
+    ],
+    [coBidDrawerCompanion],
+  );
+
+  const coBidGraphOption = useMemo(() => {
+    if (!coBidResult?.graph?.nodes?.length) return null;
+    const { nodes, links, categories } = coBidResult.graph;
+    return {
+      tooltip: {
+        trigger: "item",
+        confine: true,
+        formatter: (params: { dataType?: string; data?: Record<string, unknown> }) => {
+          const d = params.data;
+          if (!d) return "";
+          if (params.dataType === "edge") {
+            const label = d.label as { formatter?: string } | undefined;
+            return `${String(d.source)} → ${String(d.target)}<br/>${label?.formatter || `同场 ${d.value} 次`}`;
+          }
+          const patterns = (d.patterns as string[] | undefined) || [];
+          return [
+            `<strong>${String(d.name)}</strong>`,
+            patterns.length ? `模式：${patterns.join("、")}` : `同场 ${d.value} 次`,
+          ].join("<br/>");
+        },
+      },
+      color: chartPalette,
+      legend: [{ data: (categories || []).map((c) => c.name), bottom: 0, textStyle: { color: "#64748b" } }],
+      series: [
+        {
+          type: "graph",
+          layout: "force",
+          roam: true,
+          draggable: true,
+          categories,
+          data: nodes,
+          links,
+          label: { show: true, fontSize: 11 },
+          emphasis: { focus: "adjacency", lineStyle: { width: 4 } },
+          force: { repulsion: 420, gravity: 0.05, edgeLength: [100, 220], friction: 0.35 },
+          lineStyle: { color: "source", curveness: 0.12, opacity: 0.75 },
+        },
+      ],
+    };
+  }, [coBidResult]);
+
+  const coBidFlaggedCompanions = useMemo(
+    () => (coBidResult?.companions || []).filter((row) => row.patterns.length > 0),
+    [coBidResult],
+  );
+
+  const coBidCompanionColumns = useMemo<TableColumnsType<CommercialCoBidCompanion>>(
+    () => [
+      {
+        title: "关联企业",
+        dataIndex: "company_name",
+        ellipsis: true,
+        render: (name: string) => <Text strong className="commercial-company-link">{name}</Text>,
+      },
+      {
+        title: "同场次数",
+        dataIndex: "shared_inquiries",
+        width: 96,
+        align: "right",
+        sorter: (a, b) => a.shared_inquiries - b.shared_inquiries,
+        defaultSortOrder: "descend",
+      },
+      {
+        title: "同场占比",
+        dataIndex: "co_rate",
+        width: 96,
+        align: "right",
+        render: (v: number) => `${Math.round(v * 1000) / 10}%`,
+        sorter: (a, b) => a.co_rate - b.co_rate,
+      },
+      {
+        title: "目标中标",
+        dataIndex: "target_wins_together",
+        width: 88,
+        align: "right",
+      },
+      {
+        title: "对方中标",
+        dataIndex: "partner_wins_together",
+        width: 88,
+        align: "right",
+      },
+      {
+        title: "双方未中",
+        dataIndex: "both_lose_together",
+        width: 88,
+        align: "right",
+      },
+      {
+        title: "可疑模式",
+        dataIndex: "patterns",
+        width: 200,
+        render: (patterns: string[]) =>
+          patterns.length ? (
+            <Space size={[4, 4]} wrap>
+              {patterns.map((p) => (
+                <PatternHelpTag key={p} pattern={p} />
+              ))}
+            </Space>
+          ) : (
+            <Text type="secondary">—</Text>
+          ),
+      },
+    ],
+    [],
+  );
+
+  const detailColumns = useMemo<TableColumnsType<CommercialAnalysisRecord>>(
+    () => [
+      { title: "询价单号", dataIndex: "inquiry_no", width: 140, ellipsis: true },
+      { title: "采购单位", dataIndex: "purchaser", width: 160, ellipsis: true },
+      {
+        title: "中标金额",
+        dataIndex: "win_amount",
+        width: 120,
+        align: "right",
+        render: (v: number) => <Text className="commercial-amount">{formatAmount(v)}</Text>,
+      },
+      { title: "物资/项目", dataIndex: "item_name", ellipsis: true },
+      {
+        title: "中标状态",
+        dataIndex: "bid_status",
+        width: 100,
+        render: (v: string) => (v ? <Tag color="green">{v}</Tag> : "-"),
+      },
+      { title: "询价日期", dataIndex: "inquiry_time", width: 120, ellipsis: true, render: (v: string) => v || "-" },
+      { title: "来源定位", dataIndex: "source", width: 260, ellipsis: true },
+    ],
+    [],
+  );
+
+  const detailTotalAmount = useMemo(
+    () => detailRecords.reduce((sum, row) => sum + Number(row.win_amount || 0), 0),
+    [detailRecords],
+  );
 
   const companyColumns = useMemo<TableColumnsType<CompanySummaryRow>>(
     () => [
@@ -248,7 +665,7 @@ function CommercialAnalysisPage() {
         title: "企业",
         dataIndex: "company_name",
         ellipsis: true,
-        render: (name: string) => <Text strong>{name}</Text>,
+        render: (name: string) => <Text strong className="commercial-company-link">{name}</Text>,
       },
       {
         title: "参标次数",
@@ -334,6 +751,25 @@ function CommercialAnalysisPage() {
         sortDirections: SORT_DIRECTIONS,
         sortOrder: sortState.field === "risk_score" ? sortState.order : null,
         render: (v: number) => (v ? <Text type={v >= 60 ? "danger" : undefined}>{v}</Text> : "-"),
+      },
+      {
+        title: "操作",
+        key: "actions",
+        width: 96,
+        align: "center",
+        render: (_v, row) => (
+          <Button
+            type="link"
+            size="small"
+            className="commercial-co-bid-link"
+            onClick={(e) => {
+              e.stopPropagation();
+              switchToCoBid(row.company_name);
+            }}
+          >
+            陪标分析
+          </Button>
+        ),
       },
     ],
     [sortState, tablePage, tablePageSize]
@@ -433,10 +869,18 @@ function CommercialAnalysisPage() {
         <div>
           <Title level={4} style={{ margin: 0 }}>商务网分析</Title>
           <Paragraph className="commercial-analysis-subtitle">
-            按批次统计企业参标与中标情况，支持多维度筛选与排序；风险规则详见「商务网风险」页面。
+            切换分析视图：企业中标统计，或针对单一企业的陪标关联分析（阈值在「模型管理 → 陪标关联分析」中配置）。
           </Paragraph>
         </div>
-        <Space wrap>
+        <Space wrap align="start">
+          <Segmented<AnalysisViewMode>
+            value={viewMode}
+            onChange={(val) => setViewMode(val)}
+            options={[
+              { label: "企业中标统计", value: "stats" },
+              { label: "陪标关联分析", value: "cobid" },
+            ]}
+          />
           <span>商务网批次：</span>
           <Select
             style={{ minWidth: 300 }}
@@ -447,7 +891,9 @@ function CommercialAnalysisPage() {
               label: `${batchLabel(b)} (${b.file_count} 文件 · ${b.imported_at})`,
             }))}
           />
-          <Button loading={exporting} onClick={() => void exportReport()}>导出统计 Word</Button>
+          <Button loading={exporting} disabled={viewMode !== "stats"} onClick={() => void exportReport()}>
+            导出统计 Word
+          </Button>
         </Space>
       </div>
 
@@ -455,8 +901,19 @@ function CommercialAnalysisPage() {
         <Form layout="vertical" form={filter} initialValues={{ only_winners: false }}>
           <Row gutter={[16, 0]}>
             <Col xs={24} md={8} lg={6}>
-              <Form.Item name="company_name" label="企业名称">
-                <Input allowClear placeholder="支持模糊匹配" prefix={<SearchOutlined />} />
+              <Form.Item
+                name="company_name"
+                label={viewMode === "cobid" ? "目标企业" : "企业名称"}
+                rules={viewMode === "cobid" ? [{ required: true, message: "请填写目标企业" }] : []}
+              >
+                <AutoComplete
+                  allowClear
+                  placeholder={viewMode === "cobid" ? "输入或选择企业（支持模糊匹配）" : "支持模糊匹配，可留空"}
+                  options={(filterOptions.company_name || []).map((v) => ({ value: v }))}
+                  filterOption={(input, option) =>
+                    String(option?.value || "").toLowerCase().includes(input.toLowerCase())
+                  }
+                />
               </Form.Item>
             </Col>
             <Col xs={24} md={8} lg={6}>
@@ -469,6 +926,8 @@ function CommercialAnalysisPage() {
                 />
               </Form.Item>
             </Col>
+            {viewMode === "stats" && (
+              <>
             <Col xs={24} md={8} lg={6}>
               <Form.Item name="inquiry_no" label="询价单号">
                 <Select
@@ -509,6 +968,8 @@ function CommercialAnalysisPage() {
                 <Switch />
               </Form.Item>
             </Col>
+              </>
+            )}
             <Col xs={24} md={12} lg={8}>
               <Form.Item name="date_range" label="询价日期段">
                 <RangePicker
@@ -521,14 +982,20 @@ function CommercialAnalysisPage() {
             </Col>
           </Row>
           <Space>
-            <Button type="primary" loading={loading} onClick={() => void runQuery()}>查询统计</Button>
+            <Button
+              type="primary"
+              loading={viewMode === "cobid" ? coBidLoading : loading}
+              onClick={() => void runMainQuery()}
+            >
+              {viewMode === "cobid" ? "分析陪标关联" : "查询统计"}
+            </Button>
             <Button
               onClick={() => {
                 filter.resetFields();
-                setCompanySearch("");
                 setRiskLevelFilter(undefined);
                 setSortState(DEFAULT_SORT);
                 setTablePage(1);
+                setCoBidResult(null);
               }}
             >
               重置
@@ -537,7 +1004,7 @@ function CommercialAnalysisPage() {
         </Form>
       </Card>
 
-      {records && (
+      {viewMode === "stats" && records && (
         <>
           <Row gutter={[16, 16]} className="commercial-kpi-row">
             <Col xs={12} md={6}>
@@ -590,14 +1057,6 @@ function CommercialAnalysisPage() {
 
           <Card className="commercial-company-card" size="small" title="企业中标统计">
             <div className="commercial-company-toolbar">
-              <Input
-                allowClear
-                prefix={<SearchOutlined />}
-                placeholder="搜索企业名称"
-                value={companySearch}
-                onChange={(e) => setCompanySearch(e.target.value)}
-                style={{ width: 260 }}
-              />
               <Select
                 allowClear
                 placeholder="风险等级"
@@ -614,6 +1073,7 @@ function CommercialAnalysisPage() {
               <Text type="secondary">
                 共 {filteredCompanySummary.length} 家企业
                 {companySummary.length !== filteredCompanySummary.length ? `（已筛选，原始 ${companySummary.length} 家）` : ""}
+                {" · "}点击企业行查看中标明细，或点「陪标分析」切换视图
               </Text>
             </div>
             <Table<CompanySummaryRow>
@@ -627,6 +1087,15 @@ function CommercialAnalysisPage() {
               sortDirections={SORT_DIRECTIONS}
               showSorterTooltip
               onChange={handleTableChange}
+              rowClassName={(record) =>
+                detailCompany?.company_norm === record.company_norm ||
+                (detailCompany?.company_name === record.company_name && detailOpen)
+                  ? "commercial-company-row-active"
+                  : "commercial-company-row-clickable"
+              }
+              onRow={(record) => ({
+                onClick: () => void openCompanyDetail(record),
+              })}
               pagination={{
                 current: tablePage,
                 pageSize: tablePageSize,
@@ -638,6 +1107,308 @@ function CommercialAnalysisPage() {
           </Card>
         </>
       )}
+
+      {viewMode === "cobid" && (
+        <Card className="commercial-co-bid-card" size="small" title="陪标关联分析结果">
+          {!coBidResult && !coBidLoading ? (
+            <Paragraph type="secondary" className="commercial-co-bid-intro">
+              在上方填写目标企业后点击「分析陪标关联」。项目标识为询价单号（旧网=项目编码，新网=寻源单号）；判定阈值请在「模型管理 → 陪标关联分析」中调整。
+            </Paragraph>
+          ) : null}
+          {coBidResult ? (
+            <div className="commercial-co-bid-result">
+              <div className="commercial-co-bid-hero">
+                <div className="commercial-co-bid-hero-main">
+                  <span className="commercial-co-bid-hero-label">分析目标</span>
+                  <div className="commercial-co-bid-hero-name">{coBidResult.target_company}</div>
+                  <div className="commercial-co-bid-pattern-legend">
+                    <Text type="secondary">模式说明：</Text>
+                    <PatternHelpTag pattern="高频陪标" />
+                    <PatternHelpTag pattern="轮流中标" />
+                  </div>
+                </div>
+                <Row gutter={[12, 12]} className="commercial-co-bid-kpi-row">
+                  <Col xs={12} sm={6}>
+                    <div className="commercial-co-bid-kpi">
+                      <span className="label">参标项目</span>
+                      <span className="value">{coBidResult.participation_count}</span>
+                    </div>
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <div className="commercial-co-bid-kpi commercial-co-bid-kpi-win">
+                      <span className="label">中标项目</span>
+                      <span className="value">{coBidResult.win_count}</span>
+                    </div>
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <div className="commercial-co-bid-kpi">
+                      <span className="label">同场关联企业</span>
+                      <span className="value">{coBidResult.companions.length}</span>
+                    </div>
+                  </Col>
+                  <Col xs={12} sm={6}>
+                    <div className="commercial-co-bid-kpi commercial-co-bid-kpi-alert">
+                      <span className="label">可疑模式企业</span>
+                      <span className="value">{coBidFlaggedCompanions.length}</span>
+                    </div>
+                  </Col>
+                </Row>
+              </div>
+
+              <div className="commercial-co-bid-insight">
+                <Paragraph className="commercial-co-bid-description">{coBidResult.description}</Paragraph>
+                {coBidFlaggedCompanions.length > 0 ? (
+                  <div className="commercial-co-bid-flagged">
+                    <Text type="secondary">触发可疑模式：</Text>
+                    <Space size={[6, 6]} wrap>
+                      {coBidFlaggedCompanions.slice(0, 12).map((row) => (
+                        <span
+                          key={row.company_norm || row.company_name}
+                          className="commercial-co-bid-flagged-item commercial-co-bid-flagged-clickable"
+                          onClick={() => openCoBidCompanionDrawer(row)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") openCoBidCompanionDrawer(row);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <Text strong>{row.company_name}</Text>
+                          {row.patterns.map((p) => (
+                            <PatternHelpTag key={`${row.company_name}-${p}`} pattern={p} />
+                          ))}
+                        </span>
+                      ))}
+                      {coBidFlaggedCompanions.length > 12 ? (
+                        <Text type="secondary">等 {coBidFlaggedCompanions.length} 家</Text>
+                      ) : null}
+                    </Space>
+                  </div>
+                ) : null}
+              </div>
+
+              <Card
+                size="small"
+                className="commercial-chart-card commercial-co-bid-graph-card"
+                title="陪标关联网络图"
+                extra={<Text type="secondary" className="commercial-co-bid-graph-hint">点击节点、连线或下方列表查看同场明细</Text>}
+              >
+                {coBidGraphOption ? (
+                  <ReactECharts
+                    ref={coBidChartRef}
+                    option={coBidGraphOption}
+                    style={{ height: 520 }}
+                    onEvents={{ click: handleCoBidGraphClick }}
+                  />
+                ) : (
+                  <Paragraph className="analysis-empty">暂无关联网络数据</Paragraph>
+                )}
+              </Card>
+
+              <Card className="commercial-co-bid-table-card" size="small" title="同场关联企业">
+                <Text type="secondary" className="commercial-co-bid-table-hint">
+                  共 {coBidResult.companions.length} 家达到同场阈值的企业 · 点击行查看图表明细
+                </Text>
+                <Table<CommercialCoBidCompanion>
+                  className="commercial-co-bid-companion-table"
+                  rowKey={(r) => r.company_norm || r.company_name}
+                  size="middle"
+                  loading={coBidLoading}
+                  columns={coBidCompanionColumns}
+                  dataSource={coBidResult.companions}
+                  scroll={{ x: "max-content" }}
+                  showSorterTooltip
+                  rowClassName={(record) =>
+                    coBidDrawerOpen &&
+                    coBidDrawerCompanion?.company_norm === record.company_norm
+                      ? "commercial-company-row-active"
+                      : "commercial-company-row-clickable"
+                  }
+                  onRow={(record) => ({
+                    onClick: () => openCoBidCompanionDrawer(record),
+                  })}
+                  pagination={{
+                    current: coBidCompanionPage,
+                    pageSize: coBidCompanionPageSize,
+                    showSizeChanger: true,
+                    pageSizeOptions: ["10", "20", "50", "100"],
+                    showTotal: (total) => `共 ${total} 家`,
+                    onChange: (page, pageSize) => {
+                      setCoBidCompanionPage(page);
+                      setCoBidCompanionPageSize(pageSize);
+                    },
+                  }}
+                  locale={{ emptyText: "未达到同场次数阈值的企业" }}
+                />
+              </Card>
+            </div>
+          ) : null}
+        </Card>
+      )}
+
+      <Drawer
+        className="commercial-co-bid-drawer"
+        title={
+          coBidDrawerCompanion && coBidResult
+            ? `${coBidResult.target_company} ↔ ${coBidDrawerCompanion.company_name}`
+            : "同场关联明细"
+        }
+        width={Math.min(880, typeof window !== "undefined" ? window.innerWidth - 48 : 880)}
+        open={coBidDrawerOpen}
+        onClose={() => {
+          setCoBidDrawerOpen(false);
+          setCoBidDrawerCompanion(null);
+        }}
+        destroyOnClose
+      >
+        {coBidDrawerCompanion && coBidResult ? (
+          <>
+            <div className="commercial-co-bid-drawer-summary">
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">同场次数</span>
+                <span className="value">{coBidDrawerCompanion.shared_inquiries}</span>
+              </div>
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">同场占比</span>
+                <span className="value">{Math.round(coBidDrawerCompanion.co_rate * 1000) / 10}%</span>
+              </div>
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">目标中标</span>
+                <span className="value">{coBidDrawerCompanion.target_wins_together}</span>
+              </div>
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">对方中标</span>
+                <span className="value">{coBidDrawerCompanion.partner_wins_together}</span>
+              </div>
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">同场占比进度</span>
+                <Progress
+                  percent={Math.round(coBidDrawerCompanion.co_rate * 1000) / 10}
+                  size="small"
+                  strokeColor="#d94832"
+                  style={{ minWidth: 120 }}
+                />
+              </div>
+            </div>
+            {coBidDrawerCompanion.patterns.length ? (
+              <div className="commercial-co-bid-drawer-patterns">
+                {coBidDrawerCompanion.patterns.map((p) => (
+                  <PatternHelpTag key={p} pattern={p} />
+                ))}
+              </div>
+            ) : null}
+
+            <Row gutter={[12, 12]}>
+              <Col xs={24} md={12}>
+                <Card size="small" className="commercial-co-bid-drawer-chart" title="同场中标结果分布">
+                  {coBidDrawerCharts.pieOption ? (
+                    <ReactECharts option={coBidDrawerCharts.pieOption} style={{ height: 260 }} />
+                  ) : (
+                    <Paragraph className="analysis-empty">暂无数据</Paragraph>
+                  )}
+                </Card>
+              </Col>
+              <Col xs={24} md={12}>
+                <Card size="small" className="commercial-co-bid-drawer-chart" title="同场中标次数对比">
+                  {coBidDrawerCharts.compareOption ? (
+                    <ReactECharts option={coBidDrawerCharts.compareOption} style={{ height: 260 }} />
+                  ) : (
+                    <Paragraph className="analysis-empty">暂无数据</Paragraph>
+                  )}
+                </Card>
+              </Col>
+            </Row>
+
+            <Card size="small" className="commercial-co-bid-drawer-table" title={`同场项目明细（${coBidSharedInquiries.length} 项）`}>
+              <Table<CommercialCoBidInquiry>
+                rowKey="inquiry_no"
+                size="small"
+                columns={coBidDrawerInquiryColumns}
+                dataSource={coBidSharedInquiries}
+                scroll={{ x: "max-content" }}
+                pagination={{
+                  current: coBidDrawerPage,
+                  pageSize: coBidDrawerPageSize,
+                  showSizeChanger: true,
+                  pageSizeOptions: ["10", "20", "50", "100"],
+                  showTotal: (total) => `共 ${total} 条`,
+                  onChange: (page, pageSize) => {
+                    setCoBidDrawerPage(page);
+                    setCoBidDrawerPageSize(pageSize);
+                  },
+                }}
+              />
+            </Card>
+          </>
+        ) : null}
+      </Drawer>
+
+      <Drawer
+            className="commercial-detail-drawer"
+            title={detailCompany?.company_name || "中标明细"}
+            width={Math.min(920, typeof window !== "undefined" ? window.innerWidth - 48 : 920)}
+            open={detailOpen}
+            onClose={() => {
+              setDetailOpen(false);
+              setDetailCompany(null);
+            }}
+            destroyOnClose
+          >
+            {detailCompany && (
+              <>
+                <div className="commercial-detail-summary">
+                  <div className="commercial-detail-stat">
+                    <span className="label">参标次数</span>
+                    <span className="value">{detailCompany.participation_count}</span>
+                  </div>
+                  <div className="commercial-detail-stat">
+                    <span className="label">中标次数</span>
+                    <span className="value commercial-win-count">{detailCompany.win_count}</span>
+                  </div>
+                  <div className="commercial-detail-stat">
+                    <span className="label">中标率</span>
+                    <span className="value">{winRate(detailCompany.participation_count, detailCompany.win_count)}%</span>
+                  </div>
+                  <div className="commercial-detail-stat">
+                    <span className="label">中标金额合计</span>
+                    <span className="value commercial-amount">{formatAmount(detailCompany.win_amount)}</span>
+                  </div>
+                  {detailCompany.risk_level ? (
+                    <div className="commercial-detail-stat">
+                      <span className="label">风险等级</span>
+                      <span className="value">
+                        <Tag color={RISK_LEVEL_COLORS[detailCompany.risk_level] || "default"}>
+                          {riskLevelLabel(detailCompany.risk_level)}
+                        </Tag>
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+                <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                  以下展示当前筛选条件下该企业的中标记录，共 {detailRecords.length} 条，明细金额合计 {formatAmount(detailTotalAmount)} 元
+                </Paragraph>
+                <Table<CommercialAnalysisRecord>
+                  rowKey={(r, idx) => `${r.inquiry_no}-${r.item_name}-${r.win_amount}-${idx}`}
+                  size="small"
+                  loading={detailLoading}
+                  columns={detailColumns}
+                  dataSource={detailRecords}
+                  scroll={{ x: "max-content" }}
+                  locale={{ emptyText: detailCompany.win_count > 0 ? "暂无中标明细数据" : "该企业暂无中标记录" }}
+                  pagination={{
+                    current: detailDrawerPage,
+                    pageSize: detailDrawerPageSize,
+                    showSizeChanger: true,
+                    pageSizeOptions: ["10", "20", "50", "100"],
+                    showTotal: (total) => `共 ${total} 条`,
+                    onChange: (page, pageSize) => {
+                      setDetailDrawerPage(page);
+                      setDetailDrawerPageSize(pageSize);
+                    },
+                  }}
+                />
+              </>
+            )}
+          </Drawer>
     </Card>
   );
 }

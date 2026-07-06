@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from app.services.integration.bank.export_service import BankExportService
+
+# Internal registry label when multiple Excel sheets are merged on ingest — not an Excel tab name.
+_INTERNAL_COMMERCIAL_SHEETS = frozenset({"商务网明细"})
 
 
 def _strip_company_q_suffix(text: str) -> str:
@@ -205,6 +209,24 @@ class CommercialExportService(BankExportService):
             output_rows.append([self._to_text(row.get(col, "")) for col in self.OUTPUT_COLUMNS])
         return self.OUTPUT_COLUMNS, output_rows
 
+    @staticmethod
+    def _build_row_source_label(
+        file_name: str,
+        sheet_name: str,
+        row_no: int,
+        fallback_table: str = "",
+    ) -> str:
+        stem = Path(file_name).stem.strip() if file_name else ""
+        sheet = str(sheet_name).strip() if sheet_name else ""
+        if stem and sheet and int(row_no or 0) > 0:
+            if sheet in _INTERNAL_COMMERCIAL_SHEETS:
+                return (
+                    f"{stem} / 第{int(row_no)}条记录"
+                    "（未记录 Excel 工作表，请重新导入该批次）"
+                )
+            return f"{stem} / {sheet} / 第{int(row_no)}行"
+        return CommercialExportService._build_row_source_name(file_name, sheet_name, fallback_table)
+
     def _load_commercial_rows(self, import_batch_id: str) -> list[dict[str, str]]:
         file_rows = self._client.query_all(
             """
@@ -241,28 +263,35 @@ class CommercialExportService(BankExportService):
             sql_cols = ", ".join(self._client.quote_ident(c) for c in src_cols)
             raw_rows = self._client.query_all(
                 f"""
-                SELECT source_file_id, source_sheet, {sql_cols}
+                SELECT source_file_id, source_sheet, row_no, {sql_cols}
                 FROM {self._client.quote_ident(table)}
                 WHERE import_batch_id=?
                 ORDER BY raw_id;
                 """,
                 (import_batch_id,),
             )
-            label_map = {self._display_src_name(c): idx for idx, c in enumerate(src_cols, start=2)}
+            label_map = {self._display_src_name(c): idx for idx, c in enumerate(src_cols, start=3)}
             normalized_label_map = {self._normalize_label(k): v for k, v in label_map.items()}
             for row in raw_rows:
                 source_file_id = int(row[0]) if row[0] is not None else 0
                 file_name = file_name_map.get(source_file_id, "")
                 source_sheet = self._to_text(row[1])
-                record: dict[str, str] = {
-                    "数据来源": self._build_row_source_name(file_name, source_sheet, fallback_table=table)
-                }
-                for out_col in self.OUTPUT_COLUMNS[1:]:
+                row_no = int(row[2]) if row[2] is not None else 0
+                record: dict[str, str] = {}
+                for out_col in self.OUTPUT_COLUMNS:
                     if out_col == "中标总金额（元）":
                         record[out_col] = ""
                         continue
                     idx = self._resolve_index(label_map, normalized_label_map, out_col)
                     record[out_col] = "" if idx is None else self._to_text(row[idx])
+                stored_source = self._to_text(record.get("数据来源"))
+                if not stored_source:
+                    record["数据来源"] = self._build_row_source_label(
+                        file_name,
+                        source_sheet,
+                        row_no,
+                        fallback_table=table,
+                    )
                 output.append(record)
         return output
 

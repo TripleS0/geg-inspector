@@ -46,7 +46,16 @@ RISK_RULE_KEYS = (
     "risk_R005",
     "risk_R006",
     "risk_R007",
+    "risk_R008",
 )
+
+_CO_BID_DEFAULT_PARAMS: dict[str, Any] = {
+    "min_shared_inquiries": 3,
+    "min_co_rate": 0.25,
+    "min_rotating_exclusive_wins": 4,
+    "min_alternation_score": 0.55,
+    "note": "陪标关联分析：高频陪标与轮流中标判定阈值",
+}
 
 _DEFAULT_TXN_PARAMS: dict[str, Any] = {
     "large_amount_threshold": 100_000.0,
@@ -222,6 +231,22 @@ FUSION_MODEL_CATALOG: tuple[FusionModelDef, ...] = (
         category_label="风险分析 · 围串标",
         description="围标或串标口径重叠且两企业工商法定代表人为同一人",
         event_type_label="围标",
+        default_enabled=True,
+    ),
+    FusionModelDef(
+        key="risk_R008",
+        name="陪标关联分析",
+        category="commercial",
+        category_label="商务网分析",
+        description="商务网分析页「陪标关联分析」：高频陪标、轮流中标判定阈值",
+        event_type_label="陪标关联",
+        param_schema=(
+            "min_shared_inquiries",
+            "min_co_rate",
+            "min_rotating_exclusive_wins",
+            "min_alternation_score",
+        ),
+        default_params=dict(_CO_BID_DEFAULT_PARAMS),
         default_enabled=True,
     ),
 )

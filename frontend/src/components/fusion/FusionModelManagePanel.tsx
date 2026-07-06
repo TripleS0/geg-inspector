@@ -14,10 +14,11 @@ import {
   Spin,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
-import { SaveOutlined, SettingOutlined } from "@ant-design/icons";
+import { QuestionCircleOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
 import { api, FusionModelItem } from "../../api";
 
 const { Title, Text, Paragraph } = Typography;
@@ -29,7 +30,30 @@ const PARAM_LABELS: Record<string, string> = {
   special_amount_whitelist: "特殊金额白名单",
   min_win_count: "最少中标次数",
   weight: "规则权重",
+  min_shared_inquiries: "最少同场次数",
+  min_co_rate: "高频陪标同场占比阈值（0-1）",
+  min_rotating_exclusive_wins: "轮流中标最少交替次数",
+  min_alternation_score: "轮流中标交替率阈值（0-1）",
 };
+
+const PARAM_TOOLTIPS: Record<string, string> = {
+  min_shared_inquiries:
+    "关联企业进入分析列表所需的最低同场询价次数。低于该次数的企业不会出现在同场关联表中。",
+  min_co_rate:
+    "同场次数 ÷ 目标企业参标项目数。达到该比例时标记「高频陪标」。例如 0.25 表示同场占比 ≥ 25%。",
+  min_rotating_exclusive_wins:
+    "判定「轮流中标」所需的最少交替中标次数：双方在同场询价中轮流成为唯一中标方的项目数。",
+  min_alternation_score:
+    "中标方交替率（0–1）。1 表示相邻项目中标方每次都切换；0.55 表示约一半相邻项目会换人中标。",
+  large_amount_threshold: "单笔交易金额达到该值时触发大额类事件。",
+  top_n: "排名类分析保留的前 N 名数量。",
+  repeat_amount_min_count: "同一金额重复出现达到此次数时标记为特殊金额。",
+  min_win_count: "同一企业中标次数达到该值时标记重复中标。",
+  weight: "风险规则权重，影响风险分计算。",
+  special_amount_whitelist: "不视为异常的特殊金额列表，逗号分隔。",
+};
+
+const RATE_PARAM_KEYS = new Set(["min_co_rate", "min_alternation_score"]);
 
 const CATEGORY_COLORS: Record<string, string> = {
   bank: "blue",
@@ -179,6 +203,17 @@ function FusionModelManagePanel({ caseId, caseName }: FusionModelManagePanelProp
 
   const paramFields = selected?.param_schema ?? [];
 
+  const renderParamLabel = (field: string) => (
+    <span className="fusion-param-label">
+      {PARAM_LABELS[field] || field}
+      {PARAM_TOOLTIPS[field] ? (
+        <Tooltip title={PARAM_TOOLTIPS[field]} placement="topLeft">
+          <QuestionCircleOutlined className="fusion-param-help-icon" />
+        </Tooltip>
+      ) : null}
+    </span>
+  );
+
   return (
     <div className="fusion-model-manage">
       <Card className="app-card fusion-hub-panel" bordered={false}>
@@ -239,34 +274,56 @@ function FusionModelManagePanel({ caseId, caseName }: FusionModelManagePanelProp
                   <Form form={paramForm} layout="vertical" onValuesChange={onParamChange}>
                     <Paragraph type="secondary">{selected.description}</Paragraph>
                     {paramFields.includes("large_amount_threshold") && (
-                      <Form.Item name="large_amount_threshold" label={PARAM_LABELS.large_amount_threshold}>
+                      <Form.Item name="large_amount_threshold" label={renderParamLabel("large_amount_threshold")}>
                         <InputNumber style={{ width: "100%" }} min={0} step={10000} formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")} />
                       </Form.Item>
                     )}
                     {paramFields.includes("top_n") && (
-                      <Form.Item name="top_n" label={PARAM_LABELS.top_n}>
+                      <Form.Item name="top_n" label={renderParamLabel("top_n")}>
                         <InputNumber style={{ width: "100%" }} min={1} max={100} />
                       </Form.Item>
                     )}
                     {paramFields.includes("repeat_amount_min_count") && (
-                      <Form.Item name="repeat_amount_min_count" label={PARAM_LABELS.repeat_amount_min_count}>
+                      <Form.Item name="repeat_amount_min_count" label={renderParamLabel("repeat_amount_min_count")}>
                         <InputNumber style={{ width: "100%" }} min={2} max={20} />
                       </Form.Item>
                     )}
                     {paramFields.includes("min_win_count") && (
-                      <Form.Item name="min_win_count" label={PARAM_LABELS.min_win_count}>
+                      <Form.Item name="min_win_count" label={renderParamLabel("min_win_count")}>
                         <InputNumber style={{ width: "100%" }} min={2} max={50} />
                       </Form.Item>
                     )}
                     {paramFields.includes("weight") && (
-                      <Form.Item name="weight" label={PARAM_LABELS.weight}>
+                      <Form.Item name="weight" label={renderParamLabel("weight")}>
                         <InputNumber style={{ width: "100%" }} min={0.1} max={5} step={0.1} />
                       </Form.Item>
                     )}
+                    {paramFields
+                      .filter(
+                        (field) =>
+                          ![
+                            "large_amount_threshold",
+                            "top_n",
+                            "repeat_amount_min_count",
+                            "min_win_count",
+                            "weight",
+                            "special_amount_whitelist",
+                          ].includes(field),
+                      )
+                      .map((field) => (
+                        <Form.Item key={field} name={field} label={renderParamLabel(field)}>
+                          <InputNumber
+                            style={{ width: "100%" }}
+                            min={RATE_PARAM_KEYS.has(field) ? 0 : 1}
+                            max={RATE_PARAM_KEYS.has(field) ? 1 : 100}
+                            step={RATE_PARAM_KEYS.has(field) ? 0.05 : 1}
+                          />
+                        </Form.Item>
+                      ))}
                     {paramFields.includes("special_amount_whitelist") && (
                       <Form.Item
                         name="special_amount_whitelist"
-                        label={PARAM_LABELS.special_amount_whitelist}
+                        label={renderParamLabel("special_amount_whitelist")}
                         tooltip="逗号分隔，如 520,1314,666"
                       >
                         <Input

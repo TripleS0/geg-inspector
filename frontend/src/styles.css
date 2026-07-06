@@ -2946,6 +2946,307 @@ html, body, #root {
   background: rgba(255, 244, 232, 0.55);
 }
 
+.commercial-company-row-clickable {
+  cursor: pointer;
+}
+
+.commercial-company-row-active > td {
+  background: rgba(255, 236, 220, 0.85) !important;
+}
+
+.commercial-company-link {
+  color: #b33222;
+}
+
+.commercial-detail-drawer .commercial-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 248, 238, 0.9);
+  border: 1px solid rgba(224, 128, 74, 0.12);
+}
+
+.commercial-detail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.commercial-detail-stat .label {
+  font-size: 12px;
+  color: #5b6477;
+}
+
+.commercial-detail-stat .value {
+  font-size: 18px;
+  font-weight: 600;
+  color: #3b414f;
+}
+
+.commercial-co-bid-card {
+  margin-top: 16px;
+  border-radius: 14px;
+}
+
+.commercial-co-bid-intro {
+  margin-bottom: 12px !important;
+  max-width: 920px;
+}
+
+.commercial-co-bid-form {
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px 0;
+}
+
+.commercial-co-bid-result {
+  margin-top: 8px;
+}
+
+.commercial-co-bid-hero {
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 252, 248, 0.98) 0%, rgba(255, 241, 232, 0.92) 100%);
+  border: 1px solid rgba(221, 91, 38, 0.14);
+  box-shadow: 0 8px 24px rgba(154, 52, 18, 0.06);
+}
+
+.commercial-co-bid-hero-main {
+  margin-bottom: 16px;
+}
+
+.commercial-co-bid-hero-label {
+  display: block;
+  font-size: 12px;
+  color: #8a93a3;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.commercial-co-bid-hero-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #2a3140;
+  line-height: 1.35;
+  margin-bottom: 10px;
+}
+
+.commercial-co-bid-pattern-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.commercial-co-bid-kpi-row {
+  margin-top: 4px;
+}
+
+.commercial-co-bid-kpi {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(221, 91, 38, 0.1);
+  min-height: 76px;
+}
+
+.commercial-co-bid-kpi .label {
+  display: block;
+  font-size: 12px;
+  color: #7b8494;
+  margin-bottom: 6px;
+}
+
+.commercial-co-bid-kpi .value {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  color: #2f3645;
+  line-height: 1.1;
+}
+
+.commercial-co-bid-kpi-win .value {
+  color: #d94832;
+}
+
+.commercial-co-bid-kpi-alert .value {
+  color: #b45309;
+}
+
+.commercial-co-bid-insight {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(221, 91, 38, 0.08);
+}
+
+.commercial-co-bid-description {
+  margin-bottom: 8px !important;
+  color: #5b6477 !important;
+}
+
+.commercial-co-bid-flagged {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.commercial-co-bid-flagged-item {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 252, 248, 0.95);
+  border: 1px solid rgba(221, 91, 38, 0.12);
+}
+
+.commercial-co-bid-graph-card {
+  margin-bottom: 16px;
+}
+
+.commercial-pattern-tag {
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.commercial-pattern-help-icon {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.fusion-param-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fusion-param-help-icon {
+  color: #98a2b3;
+  font-size: 13px;
+  cursor: help;
+}
+
+.fusion-param-help-icon:hover {
+  color: #d94832;
+}
+
+.commercial-co-bid-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-bottom: 8px;
+}
+
+.commercial-co-bid-table-card {
+  margin-top: 16px;
+  border-radius: 12px;
+}
+
+.commercial-co-bid-table-hint {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.commercial-co-bid-companion-table {
+  margin-top: 4px;
+}
+
+.commercial-co-bid-graph-hint {
+  font-size: 12px;
+}
+
+.commercial-co-bid-flagged-clickable {
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.commercial-co-bid-flagged-clickable:hover {
+  border-color: rgba(217, 72, 50, 0.35);
+  box-shadow: 0 4px 12px rgba(154, 52, 18, 0.08);
+}
+
+.commercial-co-bid-drawer .commercial-co-bid-drawer-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 252, 248, 0.9);
+  border: 1px solid rgba(221, 91, 38, 0.1);
+}
+
+.commercial-co-bid-drawer-stat {
+  min-width: 88px;
+}
+
+.commercial-co-bid-drawer-stat .label {
+  display: block;
+  font-size: 12px;
+  color: #8a93a3;
+  margin-bottom: 4px;
+}
+
+.commercial-co-bid-drawer-stat .value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #2f3645;
+}
+
+.commercial-co-bid-drawer-patterns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.commercial-co-bid-drawer-chart {
+  border-radius: 12px;
+  margin-bottom: 0;
+}
+
+.commercial-co-bid-drawer-table {
+  margin-top: 12px;
+  border-radius: 12px;
+}
+
+.commercial-co-bid-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 8px;
+}
+
+.commercial-co-bid-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #5b6477;
+}
+
+.commercial-co-bid-legend-item i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.commercial-co-bid-link {
+  padding-inline: 4px;
+}
+
 @media (max-width: 768px) {
   .commercial-analysis-page .commercial-analysis-header {
     flex-direction: column;

@@ -14,10 +14,12 @@ from app.application.bootstrap import bootstrap_database
 from app.application.import_use_cases import ImportUseCase
 from app.services.integration.commercial.flat_ingest import (
     detect_flat_format,
+    is_win_status,
     parse_new_commercial_sheet,
     parse_old_commercial_sheet,
 )
 from app.services.integration.commercial.ingest_service import CommercialIngestService
+from app.services.integration.commercial.export_service import CommercialExportService
 from app.services.shared.db.sqlite_client import SqliteClient
 
 OLD_HEADERS = [
@@ -94,6 +96,44 @@ class CommercialFlatIngestTests(unittest.TestCase):
         self.assertEqual(detect_flat_format(old_df), "old")
         self.assertEqual(detect_flat_format(new_df), "new")
         self.assertIsNone(detect_flat_format(wide_df))
+
+    def test_is_win_status_supports_partial_and_pre_win(self) -> None:
+        self.assertTrue(is_win_status("已中标"))
+        self.assertTrue(is_win_status("已预中标"))
+        self.assertTrue(is_win_status("部分中标"))
+        self.assertTrue(is_win_status("部分预中标"))
+        self.assertFalse(is_win_status("未中标"))
+
+    def test_parse_old_format_partial_pre_win_counts_as_winner(self) -> None:
+        rows = [
+            [
+                "Q1003",
+                "P001",
+                "SU003",
+                "2010-06-10",
+                "丙公司",
+                "部分预中标",
+                85000,
+                "测试项目",
+                "工程招标",
+                "",
+                "",
+                "2010-06-10 08:30",
+                "",
+                120000,
+                "张三",
+            ],
+        ]
+        records = parse_old_commercial_sheet(
+            _sheet_df(OLD_HEADERS, rows),
+            purchaser="珠海发电厂",
+            output_columns=self.output_columns,
+            source_file="demo",
+            source_sheet="旧商务网数据",
+        )
+        self.assertEqual(records[0]["中标金额(元)"], "85000")
+        self.assertEqual(records[0]["中标供应商"], "丙公司")
+        self.assertEqual(records[0]["数据来源"], "demo / 旧商务网数据 / 第2行")
 
     def test_parse_old_format_winner_and_amount(self) -> None:
         rows = [
@@ -403,6 +443,13 @@ class CommercialFlatIngestTests(unittest.TestCase):
         )
         self.assertEqual(summary.failed_files, 0)
         self.assertEqual(summary.rows_total, 2)
+
+        export = CommercialExportService(self.client)
+        rows = export._load_commercial_rows(summary.import_batch_id)
+        sources = {row.get("数据来源", "") for row in rows}
+        self.assertTrue(any("旧商务网数据" in src for src in sources), sources)
+        self.assertTrue(any("新商务网数据" in src for src in sources), sources)
+        self.assertFalse(any("商务网明细" in src for src in sources), sources)
 
     def test_import_legacy_wide_workbook(self) -> None:
         mock_path = Path(__file__).resolve().parents[2] / "mock-data" / "02_commercial_商务网询价.xlsx"

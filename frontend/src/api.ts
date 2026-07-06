@@ -171,6 +171,8 @@ export interface CommercialAnalysisRecord {
   quote_price: string;
   quantity: string;
   remark: string;
+  inquiry_time?: string;
+  bid_status?: string;
 }
 
 export interface CommercialAnalysisResponse {
@@ -188,6 +190,57 @@ export interface CommercialAnalysisResponse {
     top_purchaser_amounts: Array<[string, number]>;
   };
   description: string;
+}
+
+export interface CommercialCoBidAnalysisFilter {
+  company_name: string;
+  purchaser?: string;
+  start_time?: string;
+  end_time?: string;
+}
+
+export interface CommercialCoBidCompanion {
+  company_name: string;
+  company_norm: string;
+  shared_inquiries: number;
+  co_rate: number;
+  target_wins_together: number;
+  partner_wins_together: number;
+  both_lose_together: number;
+  other_wins_together: number;
+  target_win_rate_together: number;
+  partner_win_rate_together: number;
+  both_lose_rate_together: number;
+  patterns: string[];
+  pattern_detail: Record<string, unknown>;
+  shared_inquiry_nos: string[];
+}
+
+export interface CommercialCoBidInquiry {
+  inquiry_no: string;
+  purchaser: string;
+  item_name: string;
+  inquiry_time: string;
+  participants: string[];
+  participant_count: number;
+  winners: string[];
+  target_won: boolean;
+}
+
+export interface CommercialCoBidAnalysisResponse {
+  target_company: string;
+  target_company_norm: string;
+  participation_count: number;
+  win_count: number;
+  description: string;
+  thresholds?: Record<string, number>;
+  inquiries: CommercialCoBidInquiry[];
+  companions: CommercialCoBidCompanion[];
+  graph: {
+    nodes: Array<Record<string, unknown>>;
+    links: Array<Record<string, unknown>>;
+    categories: Array<{ name: string }>;
+  };
 }
 
 export interface WechatAnalysisFilter {
@@ -936,6 +989,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(filters),
     }),
+
+  commercialCoBidAnalysis: (batchId: string, filters: CommercialCoBidAnalysisFilter) =>
+    http<CommercialCoBidAnalysisResponse>(
+      `/api/commercial/${encodeURIComponent(batchId)}/analysis/co-bidding`,
+      { method: "POST", body: JSON.stringify(filters) },
+    ),
 
   wechatAnalysisFilterOptions: (batchId: string) =>
     http<Record<string, string[]>>(`/api/wechat/${encodeURIComponent(batchId)}/analysis/filter-options`),

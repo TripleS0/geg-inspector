@@ -14,6 +14,7 @@ from app.services.integration.commercial.flat_ingest import (
     detect_flat_format,
     parse_new_commercial_sheet,
     parse_old_commercial_sheet,
+    _format_source_ref,
 )
 
 
@@ -21,6 +22,7 @@ class CommercialIngestService(BankIngestService):
     """Ingest commercial procurement files into normalized line-level raw rows."""
 
     BASE_COLUMNS = [
+        "数据来源",
         "询价单号",
         "摘要",
         "采购单位",
@@ -94,7 +96,11 @@ class CommercialIngestService(BankIngestService):
 
             try:
                 workbook = self._read_workbook_fallback(path, pd)
-                detail_df = self._parse_commercial_workbook(workbook, bank_name=bank_name)
+                detail_df = self._parse_commercial_workbook(
+                    workbook,
+                    bank_name=bank_name,
+                    source_file_stem=path.stem,
+                )
             except Exception as err:
                 failed_files += 1
                 self._write_log(import_batch_id, file_path, "error", f"商务网解析失败: {err}")
@@ -156,11 +162,16 @@ class CommercialIngestService(BankIngestService):
             failed_files=failed_files,
         )
 
-    def _parse_commercial_workbook(self, workbook: dict[str, Any], bank_name: str = "") -> pd.DataFrame:
+    def _parse_commercial_workbook(
+        self,
+        workbook: dict[str, Any],
+        bank_name: str = "",
+        source_file_stem: str = "",
+    ) -> pd.DataFrame:
         """Parse workbook into normalized line-level commercial rows."""
         header_ctx: dict[str, str] = {}
         records: list[dict[str, str]] = []
-        for _, raw_df in workbook.items():
+        for sheet_name, raw_df in workbook.items():
             if raw_df is None or raw_df.empty:
                 continue
             df = raw_df.astype(object).fillna("")
@@ -171,6 +182,8 @@ class CommercialIngestService(BankIngestService):
                         df,
                         purchaser=bank_name,
                         output_columns=self.OUTPUT_COLUMNS,
+                        source_file=source_file_stem,
+                        source_sheet=str(sheet_name),
                     )
                 )
                 continue
@@ -180,13 +193,22 @@ class CommercialIngestService(BankIngestService):
                         df,
                         purchaser=bank_name,
                         output_columns=self.OUTPUT_COLUMNS,
+                        source_file=source_file_stem,
+                        source_sheet=str(sheet_name),
                     )
                 )
                 continue
             if df.shape[1] <= 8:
                 header_ctx.update(self._extract_header_context(df))
                 continue
-            records.extend(self._extract_detail_rows(df, header_ctx))
+            records.extend(
+                self._extract_detail_rows(
+                    df,
+                    header_ctx,
+                    source_file=source_file_stem,
+                    source_sheet=str(sheet_name),
+                )
+            )
         if not records:
             return pd.DataFrame(columns=self.OUTPUT_COLUMNS)
         return pd.DataFrame(records, columns=self.OUTPUT_COLUMNS).fillna("")
@@ -232,7 +254,13 @@ class CommercialIngestService(BankIngestService):
                     out[std_key] = raw_value
         return out
 
-    def _extract_detail_rows(self, df: pd.DataFrame, header_ctx: dict[str, str]) -> list[dict[str, str]]:
+    def _extract_detail_rows(
+        self,
+        df: pd.DataFrame,
+        header_ctx: dict[str, str],
+        source_file: str = "",
+        source_sheet: str = "",
+    ) -> list[dict[str, str]]:
         """Expand wide supplier blocks into one row per detail x supplier."""
         header_row = self._find_detail_header_row(df)
         if header_row < 0:
@@ -251,8 +279,10 @@ class CommercialIngestService(BankIngestService):
                 continue
             if not self._is_valid_detail_row(first_cell):
                 continue
+            excel_row = idx + 1
             for block in supplier_blocks:
                 record = {key: header_ctx.get(key, "") for key in self.BASE_COLUMNS}
+                record["数据来源"] = _format_source_ref(source_file, source_sheet, excel_row)
                 record.update(
                     {
                         "序号": first_cell,

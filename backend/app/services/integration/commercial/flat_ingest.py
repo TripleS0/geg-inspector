@@ -10,7 +10,18 @@ import pandas as pd
 _BID_CODE_PATTERN = re.compile(r"^Q[A-Za-z0-9]+$")
 _DATETIME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?$")
 
-WIN_STATUSES = {"已中标"}
+WIN_STATUSES = frozenset({"已中标", "已预中标", "部分中标", "部分预中标"})
+
+
+def is_win_status(status: Any) -> bool:
+    """Treat partial/full pre-win and win statuses as won."""
+    text = _to_text(status)
+    if not text:
+        return False
+    if text in WIN_STATUSES:
+        return True
+    normalized = text.replace(" ", "")
+    return normalized in WIN_STATUSES
 
 
 def normalize_header(name: Any) -> str:
@@ -147,6 +158,13 @@ def _realign_new_format_row(row: pd.Series, headers: list[str]) -> pd.Series:
     return pd.Series(realigned[: len(headers)], index=headers, dtype=object)
 
 
+def _format_source_ref(source_file: str, source_sheet: str, excel_row: int) -> str:
+    parts = [part for part in (_to_text(source_file), _to_text(source_sheet)) if part]
+    if not parts:
+        return f"第{excel_row}行"
+    return f"{' / '.join(parts)} / 第{excel_row}行"
+
+
 def _empty_record(output_columns: list[str]) -> dict[str, str]:
     return {column: "" for column in output_columns}
 
@@ -159,7 +177,7 @@ def _build_winners_by_project(body: pd.DataFrame, project_col: str, status_col: 
             continue
         status = _cell(row, status_col)
         company = _cell(row, company_col)
-        if status not in WIN_STATUSES or not company:
+        if not is_win_status(status) or not company:
             continue
         bucket = winners.setdefault(project_code, [])
         if company not in bucket:
@@ -187,6 +205,8 @@ def parse_old_commercial_sheet(
     *,
     purchaser: str,
     output_columns: list[str],
+    source_file: str = "",
+    source_sheet: str = "",
 ) -> list[dict[str, str]]:
     """Parse flat old commercial-network rows grouped by project code."""
     body = _promote_header(df)
@@ -209,7 +229,7 @@ def parse_old_commercial_sheet(
     winners_by_project = _build_winners_by_project(body, project_col, status_col, company_col)
     records: list[dict[str, str]] = []
 
-    for _, row in body.iterrows():
+    for excel_row, (_, row) in enumerate(body.iterrows(), start=2):
         project_code = _cell(row, project_col)
         company_name = _cell(row, company_col)
         if not project_code or not company_name:
@@ -220,10 +240,12 @@ def parse_old_commercial_sheet(
         quote_text = _format_amount(quote_amount) if quote_amount > 0 else _cell(row, quote_col)
         winners = winners_by_project.get(project_code, [])
         title = _cell(row, title_col)
+        won = is_win_status(status)
 
         record = _empty_record(output_columns)
         record.update(
             {
+                "数据来源": _format_source_ref(source_file, source_sheet, excel_row),
                 "询价单号": project_code,
                 "摘要": title,
                 "采购单位": purchaser,
@@ -244,7 +266,7 @@ def parse_old_commercial_sheet(
                 "含税合计总价(元)": quote_text,
             }
         )
-        if status in WIN_STATUSES:
+        if won:
             record["中标金额(元)"] = _format_amount(quote_amount)
         records.append(record)
 
@@ -256,6 +278,8 @@ def parse_new_commercial_sheet(
     *,
     purchaser: str,
     output_columns: list[str],
+    source_file: str = "",
+    source_sheet: str = "",
 ) -> list[dict[str, str]]:
     """Parse flat new commercial-network rows grouped by sourcing inquiry number."""
     body = _promote_header(df)
@@ -266,6 +290,7 @@ def parse_new_commercial_sheet(
     if not inquiry_col or not company_col:
         return []
 
+    status_col = _pick_column(columns, "中标状态", "状态")
     title_col = _pick_column(columns, "寻源标题")
     scope_col = _pick_column(columns, "寻源范围")
     category_col = _pick_column(columns, "寻源类别")
@@ -283,7 +308,7 @@ def parse_new_commercial_sheet(
     winner_by_inquiry = _build_winner_by_inquiry(body, inquiry_col, winner_col)
     records: list[dict[str, str]] = []
 
-    for _, row in body.iterrows():
+    for excel_row, (_, row) in enumerate(body.iterrows(), start=2):
         inquiry_no = _cell(row, inquiry_col)
         company_name = _cell(row, company_col)
         if not inquiry_no or not _looks_like_company_name(company_name):
@@ -292,21 +317,24 @@ def parse_new_commercial_sheet(
         winner = winner_by_inquiry.get(inquiry_no, "")
         if winner and not _looks_like_company_name(winner):
             winner = ""
+        status = _cell(row, status_col) if status_col else ""
         quote_amount = _to_amount(_cell(row, quote_col))
         quote_text = _format_amount(quote_amount) if quote_amount > 0 else _cell(row, quote_col)
         title = _cell(row, title_col)
-        is_winner = bool(winner) and company_name == winner
+        won = is_win_status(status) or (bool(winner) and company_name == winner)
+        display_status = status if status else ("已中标" if won else "未中标")
 
         record = _empty_record(output_columns)
         record.update(
             {
+                "数据来源": _format_source_ref(source_file, source_sheet, excel_row),
                 "询价单号": inquiry_no,
                 "摘要": title,
                 "采购单位": purchaser,
                 "询价类别": _cell(row, category_col),
                 "寻源范围": _cell(row, scope_col),
                 "报价截止时间": _cell(row, deadline_col),
-                "状态": "已中标" if is_winner else "未中标",
+                "状态": display_status,
                 "预估含税总额": _cell(row, budget_col),
                 "中标供应商": winner,
                 "备注": _compose_remark(
@@ -320,7 +348,7 @@ def parse_new_commercial_sheet(
                 "含税合计总价(元)": quote_text,
             }
         )
-        if is_winner:
+        if won:
             win_amount = quote_amount if quote_amount > 0 else _to_amount(_cell(row, win_price_col))
             record["中标金额(元)"] = _format_amount(win_amount)
         records.append(record)
@@ -342,6 +370,7 @@ def _compose_remark(*, handler: str = "", bid_code: str = "", supplier_code: str
 __all__ = [
     "WIN_STATUSES",
     "detect_flat_format",
+    "is_win_status",
     "normalize_header",
     "parse_new_commercial_sheet",
     "parse_old_commercial_sheet",

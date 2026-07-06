@@ -14,6 +14,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from app.services.integration.commercial.export_service import CommercialExportService, _split_company_names
+from app.services.integration.commercial.flat_ingest import is_win_status
 from app.services.integration.commercial.ic_ingest_service import normalize_enterprise_name
 from app.services.shared.db.sqlite_client import SqliteClient
 
@@ -345,10 +346,18 @@ class CommercialAnalysisService:
                 continue
             winners = _split_company_names(self._to_text(row.get("中标供应商")))
             winner_norms = {normalize_enterprise_name(w) for w in winners if normalize_enterprise_name(w)}
-            amount = self._safe_amount(row.get("中标金额(元)", ""))
+            status = self._to_text(row.get("状态"))
+            base_amount = self._safe_amount(row.get("中标金额(元)", ""))
             for company in companies:
                 cn = normalize_enterprise_name(company)
-                is_winner = bool(cn and any(self._is_same_company(cn, wn) for wn in winner_norms))
+                is_winner_by_supplier = bool(cn and any(self._is_same_company(cn, wn) for wn in winner_norms))
+                is_winner = is_win_status(status) or is_winner_by_supplier
+                amount = base_amount
+                if is_winner and amount <= 0:
+                    amount = max(
+                        self._safe_amount(row.get("总价(元)", "")),
+                        self._safe_amount(row.get("含税合计总价(元)", "")),
+                    )
                 inquiry_no = self._to_text(row.get("询价单号"))
                 purchaser = self._to_text(row.get("采购单位"))
                 key = (cn, inquiry_no, purchaser, self._to_text(row.get("序号")), amount if is_winner else 0.0)
@@ -369,6 +378,7 @@ class CommercialAnalysisService:
                         "quantity": self._to_text(row.get("数量")),
                         "remark": self._to_text(row.get("备注")),
                         "inquiry_time": self._extract_inquiry_time(row),
+                        "bid_status": status,
                     }
                 )
         return records
@@ -475,6 +485,8 @@ class CommercialAnalysisService:
     @staticmethod
     def _distinct(records: list[dict[str, Any]], key: str) -> list[str]:
         values = sorted({str(r.get(key) or "").strip() for r in records if str(r.get(key) or "").strip()})
+        if key == "company_name":
+            return values
         return values[:1000]
 
     @staticmethod

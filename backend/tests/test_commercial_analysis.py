@@ -206,6 +206,34 @@ class CommercialAnalysisFilterTests(unittest.TestCase):
 
         self.assertEqual(names, {"高频中标公司"})
 
+    def test_load_records_treats_partial_status_as_winner(self) -> None:
+        from app.services.integration.commercial.export_service import CommercialExportService
+
+        raw_rows = [
+            {
+                "数据来源": "book / sheet1 / 第3行",
+                "询价单号": "Q-1",
+                "采购单位": "采购单位A",
+                "公司名称": "甲公司",
+                "中标供应商": "",
+                "状态": "部分预中标",
+                "中标金额(元)": "",
+                "物资编码/来源采购申请代码--物资描述": "物资",
+                "含税单价(元)": "100",
+                "数量": "1",
+                "备注": "",
+                "总价(元)": "5000",
+                "含税合计总价(元)": "5000",
+            }
+        ]
+        with patch.object(CommercialExportService, "_load_commercial_rows", return_value=raw_rows):
+            records = self.service._load_records(self.batch_id)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["is_winner"])
+        self.assertEqual(records[0]["win_amount"], 5000.0)
+        self.assertEqual(records[0]["bid_status"], "部分预中标")
+        self.assertEqual(records[0]["source"], "book / sheet1 / 第3行")
+
     def test_summary_counts_match_filtered_company_summary(self) -> None:
         records = [_record("甲公司", f"Q-A-{idx}") for idx in range(105)]
         records += [_record("乙公司", f"Q-B-{idx}") for idx in range(8)]

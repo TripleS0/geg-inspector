@@ -46,6 +46,7 @@ from app.services.bank_ocr.upload_formats import SUPPORTED_UPLOAD_SUFFIXES, UPLO
 from app.services.integration.bank.mapping_service import BankMappingService
 from app.services.integration.bank.query_service import BankQueryFilters
 from app.services.integration.commercial.analysis_service import CommercialAnalysisFilters
+from app.services.integration.commercial.co_bid_analysis_service import CoBidAnalysisParams
 from app.services.integration.telecom.analysis_service import TelecomAnalysisFilters
 from app.services.integration.wechat.analysis_service import WechatAnalysisFilters
 from app.services.integration.bank.user_bank_template_repository import UserBankTemplateRepository
@@ -152,6 +153,22 @@ class CommercialAnalysisFilterRequest(BaseModel):
         else:  # pragma: no cover - pydantic v1 fallback
             data = self.dict()
         return CommercialAnalysisFilters(**data)
+
+
+class CommercialCoBidAnalysisRequest(BaseModel):
+    """Co-bidding pattern analysis for a target company."""
+
+    company_name: str = ""
+    purchaser: str = ""
+    start_time: str = ""
+    end_time: str = ""
+
+    def to_params(self) -> CoBidAnalysisParams:
+        if hasattr(self, "model_dump"):
+            data = self.model_dump()
+        else:  # pragma: no cover - pydantic v1 fallback
+            data = self.dict()
+        return CoBidAnalysisParams(**data)
 
 
 class WechatAnalysisFilterRequest(BaseModel):
@@ -432,6 +449,20 @@ def _ensure_r007_rule_row() -> None:
     )
 
 
+def _ensure_r008_rule_row() -> None:
+    """旧库可能无 R008（陪标关联分析阈值），幂等补种。"""
+    SqliteClient().execute(
+        """
+        INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version)
+        VALUES (
+            'R008', '陪标关联分析', 1, 1.0,
+            '{"min_shared_inquiries":3,"min_co_rate":0.25,"max_target_win_rate":0.15,"min_both_lose_rate":0.5,"min_other_win_rate":0.5,"min_rotating_exclusive_wins":4,"min_alternation_score":0.55,"note":"陪标关联分析页面判定阈值"}',
+            1
+        );
+        """
+    )
+
+
 QICHACHA_503_DETAIL = (
     "未配置企查查密钥：请设置环境变量 QICHACHA_APP_KEY / QICHACHA_SECRET_KEY，"
     "或在以下任一 JSON 文件中填写 app_key 与 secret_key（格式见 "
@@ -586,6 +617,7 @@ def create_app() -> FastAPI:
     """Create the local FastAPI app."""
     bootstrap_database()
     _ensure_r007_rule_row()
+    _ensure_r008_rule_row()
     app = FastAPI(title="DataFusionX Offline Backend", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -1325,6 +1357,13 @@ def create_app() -> FastAPI:
         payload: CommercialAnalysisFilterRequest,
     ) -> Dict[str, Any]:
         return CommercialAnalysisUseCase().query_records(batch_id, payload.to_filters())
+
+    @app.post("/api/commercial/{batch_id}/analysis/co-bidding")
+    def commercial_co_bid_analysis(
+        batch_id: str,
+        payload: CommercialCoBidAnalysisRequest,
+    ) -> Dict[str, Any]:
+        return CommercialAnalysisUseCase().analyze_co_bidding(batch_id, payload.to_params())
 
     @app.get("/api/wechat/{batch_id}/analysis/filter-options")
     def wechat_analysis_filter_options(batch_id: str) -> Dict[str, List[str]]:

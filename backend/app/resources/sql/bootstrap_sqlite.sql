@@ -404,4 +404,5 @@ INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, para
 ('R004', '关联关系异常', 1, 1.0, '{"note":"同一询价下匹配到的工商主体法定代表人相同"}', 1),
 ('R005', '报价异常', 1, 1.0, '{"min_suppliers_with_price":3,"max_cv":0.02,"note":"同一询价多家含税单价离散度过低"}', 1),
 ('R006', '轮流中标', 1, 1.0, '{"min_distinct_winners":3,"window_size":5,"note":"连续多单中标方在固定小集合内轮换"}', 1),
-('R007', '协同串标强化', 1, 1.2, '{"min_shared_inquiries":3,"min_jaccard":0.8,"min_inquiries_for_jaccard":3,"note":"围标或串标口径重叠且两企业工商法定代表人为同一人"}', 1);
+('R007', '协同串标强化', 1, 1.2, '{"min_shared_inquiries":3,"min_jaccard":0.8,"min_inquiries_for_jaccard":3,"note":"围标或串标口径重叠且两企业工商法定代表人为同一人"}', 1),
+('R008', '陪标关联分析', 1, 1.0, '{"min_shared_inquiries":3,"min_co_rate":0.25,"max_target_win_rate":0.15,"min_both_lose_rate":0.5,"min_other_win_rate":0.5,"min_rotating_exclusive_wins":4,"min_alternation_score":0.55,"note":"陪标关联分析页面判定阈值"}', 1);
