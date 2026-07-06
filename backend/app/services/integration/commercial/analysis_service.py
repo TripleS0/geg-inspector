@@ -18,6 +18,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 
 @dataclass(frozen=True)
 class CommercialAnalysisFilters:
+    quick_query: str = ""
     company_name: str = ""
     purchaser: str = ""
     inquiry_no: str = ""
@@ -369,6 +370,24 @@ class CommercialAnalysisService:
         return out
 
     def _match_filters(self, row: dict[str, Any], filters: CommercialAnalysisFilters) -> bool:
+        for token in self._quick_tokens(filters.quick_query):
+            haystack = " ".join(
+                self._to_text(row.get(key))
+                for key in (
+                    "company_name",
+                    "purchaser",
+                    "inquiry_no",
+                    "winner",
+                    "item_name",
+                    "source",
+                    "quote_price",
+                    "quantity",
+                    "remark",
+                )
+            )
+            winner_text = "中标" if bool(row.get("is_winner")) else "未中标"
+            if token not in haystack and token not in winner_text:
+                return False
         if filters.company_name and filters.company_name not in self._to_text(row.get("company_name")):
             return False
         if filters.purchaser and filters.purchaser not in self._to_text(row.get("purchaser")):
@@ -418,6 +437,10 @@ class CommercialAnalysisService:
     @staticmethod
     def _to_text(value: Any) -> str:
         return "" if value is None else str(value).strip()
+
+    @staticmethod
+    def _quick_tokens(query: str) -> list[str]:
+        return [token for token in str(query or "").strip().split() if token]
 
     @staticmethod
     def _safe_amount(value: Any) -> float:

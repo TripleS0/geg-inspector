@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Card, Form, Input, List, Radio, Space, Tabs, Tag, Typography, Upload } from "antd";
 import { InboxOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
@@ -8,6 +8,31 @@ import { SOURCE_LABELS, SourceType } from "./constants";
 
 const { Dragger } = Upload;
 const { Text } = Typography;
+const SOURCE_KEYS = Object.keys(SOURCE_LABELS) as SourceType[];
+
+function createFileMap(): Record<SourceType, UploadFile[]> {
+  return {
+    bank: [],
+    commercial: [],
+    enterprise: [],
+    wechat: [],
+    telecom: [],
+  };
+}
+
+function createTextMap(defaultValue = ""): Record<SourceType, string> {
+  return {
+    bank: defaultValue,
+    commercial: defaultValue,
+    enterprise: defaultValue,
+    wechat: defaultValue,
+    telecom: defaultValue,
+  };
+}
+
+function fileNameWithoutExt(name: string) {
+  return name.replace(/\.(xlsx|xls|jpg|jpeg|png|pdf)$/i, "");
+}
 
 export interface DataImportFormValues {
   source_type: SourceType;
@@ -30,12 +55,20 @@ interface UseDataImportFormOptions {
 export function useDataImportForm(options: UseDataImportFormOptions = {}) {
   const { disabled = false, allowOcr = true, compact = false } = options;
   const [form] = Form.useForm<DataImportFormValues>();
-  const [files, setFiles] = useState<UploadFile[]>([]);
+  const [filesBySource, setFilesBySource] = useState<Record<SourceType, UploadFile[]>>(() => createFileMap());
   const [ocrFiles, setOcrFiles] = useState<UploadFile[]>([]);
+  const [batchNames, setBatchNames] = useState<Record<SourceType, string>>(() => createTextMap());
+  const [bankNames, setBankNames] = useState<Record<SourceType, string>>(() => createTextMap("默认来源"));
+  const [autoBatchNames, setAutoBatchNames] = useState<Record<SourceType, string>>(() => createTextMap());
   const [bankImportMode, setBankImportMode] = useState<"excel" | "ocr">("excel");
   const [ocrJobs, setOcrJobs] = useState<BankOcrJob[]>([]);
   const [ocrFormatHint, setOcrFormatHint] = useState("支持 PNG、JPEG、BMP、TIFF、WebP、GIF、SVG 及 PDF");
   const sourceType = Form.useWatch("source_type", form) as SourceType | undefined;
+  const activeSource = sourceType || "bank";
+  const activeFiles = filesBySource[activeSource] || [];
+  const hasExcelFiles = SOURCE_KEYS.some((key) => filesBySource[key].length > 0);
+  const hasOcrFiles = ocrFiles.length > 0;
+  const sourceTypeRef = useRef<SourceType>("bank");
 
   useEffect(() => {
     if (!allowOcr) return;
@@ -54,32 +87,95 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
   }, [allowOcr]);
 
   useEffect(() => {
-    const activeFiles = sourceType === "bank" && bankImportMode === "ocr" ? ocrFiles : files;
-    if (activeFiles.length === 0) return;
-    const current = String(form.getFieldValue("batch_name") || "").trim();
-    if (current) return;
-    const first = activeFiles[0].name.replace(/\.(xlsx|xls|jpg|jpeg|png|pdf)$/i, "");
-    form.setFieldsValue({ batch_name: first });
-  }, [files, ocrFiles, form, sourceType, bankImportMode]);
+    sourceTypeRef.current = activeSource;
+    form.setFieldsValue({
+      batch_name: batchNames[activeSource] || "",
+      bank_name: bankNames[activeSource] || "默认来源",
+    });
+  }, [activeSource, batchNames, bankNames, form]);
+
+  const syncBatchNameFromFiles = (type: SourceType, fileList: UploadFile[]) => {
+    const nextAutoName = fileList[0]?.name ? fileNameWithoutExt(fileList[0].name) : "";
+    setAutoBatchNames((prev) => ({ ...prev, [type]: nextAutoName }));
+    setBatchNames((prev) => {
+      const current = prev[type] || "";
+      const previousAutoName = autoBatchNames[type] || "";
+      if (!nextAutoName || (current && current !== previousAutoName)) return prev;
+      return { ...prev, [type]: nextAutoName };
+    });
+    if (sourceTypeRef.current === type) {
+      const current = String(form.getFieldValue("batch_name") || "").trim();
+      if (!current || current === (autoBatchNames[type] || "")) {
+        form.setFieldsValue({ batch_name: nextAutoName });
+      }
+    }
+  };
+
+  const updateFilesForSource = (type: SourceType, fileList: UploadFile[]) => {
+    setFilesBySource((prev) => ({ ...prev, [type]: fileList }));
+    syncBatchNameFromFiles(type, fileList);
+  };
+
+  const handleValuesChange = (changed: Partial<DataImportFormValues>) => {
+    const type = sourceTypeRef.current;
+    if (Object.prototype.hasOwnProperty.call(changed, "batch_name")) {
+      setBatchNames((prev) => ({ ...prev, [type]: changed.batch_name || "" }));
+    }
+    if (Object.prototype.hasOwnProperty.call(changed, "bank_name")) {
+      setBankNames((prev) => ({ ...prev, [type]: changed.bank_name || "" }));
+    }
+  };
+
+  const toRealFiles = (fileList: UploadFile[]) =>
+    fileList
+      .map((item) => item.originFileObj as File | undefined)
+      .filter((file): file is File => Boolean(file));
 
   const reset = () => {
     form.resetFields();
-    setFiles([]);
+    setFilesBySource(createFileMap());
     setOcrFiles([]);
+    setBatchNames(createTextMap());
+    setBankNames(createTextMap("默认来源"));
+    setAutoBatchNames(createTextMap());
     setBankImportMode("excel");
   };
 
   const getPayload = async (): Promise<DataImportPayload> => {
     const values = await form.validateFields();
     const useOcr = values.source_type === "bank" && bankImportMode === "ocr";
-    const activeList = useOcr ? ocrFiles : files;
-    const realFiles = activeList
-      .map((item) => item.originFileObj as File | undefined)
-      .filter((file): file is File => Boolean(file));
+    const activeList = useOcr ? ocrFiles : filesBySource[values.source_type];
+    const realFiles = toRealFiles(activeList);
     if (!realFiles.length) {
       throw new Error(useOcr ? "请先选择至少一个图片或 PDF 文件" : "请先选择至少一个表格文件（.xlsx 或 .xls）");
     }
-    return { values, files: realFiles, bankImportMode: useOcr ? "ocr" : "excel" };
+    const batchName = values.batch_name || fileNameWithoutExt(realFiles[0].name);
+    return { values: { ...values, batch_name: batchName }, files: realFiles, bankImportMode: useOcr ? "ocr" : "excel" };
+  };
+
+  const getAllPayloads = async (): Promise<DataImportPayload[]> => {
+    const values = await form.validateFields();
+    const currentSource = values.source_type;
+    const nextBatchNames = { ...batchNames, [currentSource]: values.batch_name || "" };
+    const nextBankNames = { ...bankNames, [currentSource]: values.bank_name || "默认来源" };
+    const payloads = SOURCE_KEYS.flatMap((type) => {
+      const realFiles = toRealFiles(filesBySource[type]);
+      if (!realFiles.length) return [];
+      const batchName = nextBatchNames[type] || fileNameWithoutExt(realFiles[0].name);
+      return [{
+        values: {
+          source_type: type,
+          bank_name: nextBankNames[type] || "默认来源",
+          batch_name: batchName,
+        },
+        files: realFiles,
+        bankImportMode: "excel" as const,
+      }];
+    });
+    if (!payloads.length) {
+      throw new Error("请先至少为一个数据来源选择表格文件（.xlsx 或 .xls）");
+    }
+    return payloads;
   };
 
   const isOcrMode = sourceType === "bank" && bankImportMode === "ocr";
@@ -100,9 +196,9 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
                   multiple
                   disabled={disabled}
                   beforeUpload={() => false}
-                  fileList={files}
+                  fileList={filesBySource.bank}
                   accept=".xlsx,.xls"
-                  onChange={(info) => setFiles(info.fileList)}
+                  onChange={(info) => updateFilesForSource("bank", info.fileList)}
                 >
                   <p className="ant-upload-drag-icon"><InboxOutlined /></p>
                   <p className="ant-upload-text">点击或拖拽表格文件到此区域</p>
@@ -172,9 +268,9 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
           multiple
           disabled={disabled}
           beforeUpload={() => false}
-          fileList={files}
+          fileList={activeFiles}
           accept=".xlsx,.xls"
-          onChange={(info) => setFiles(info.fileList)}
+          onChange={(info) => updateFilesForSource(activeSource, info.fileList)}
         >
           <p className="ant-upload-drag-icon"><InboxOutlined /></p>
           <p className="ant-upload-text">点击或拖拽表格文件到此区域</p>
@@ -190,12 +286,16 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
         layout="vertical"
         className={`data-import-form${compact ? " data-import-form-compact" : ""}`}
         initialValues={{ source_type: "bank", bank_name: "默认来源" }}
+        onValuesChange={handleValuesChange}
       >
         <Form.Item label="数据来源" name="source_type" rules={[{ required: true }]}>
           <Radio.Group className="data-import-source-group" disabled={disabled}>
             {(Object.keys(SOURCE_LABELS) as SourceType[]).map((key) => (
               <Radio.Button value={key} key={key}>
-                {SOURCE_LABELS[key]}
+                <Space size={6}>
+                  <span>{SOURCE_LABELS[key]}</span>
+                  {filesBySource[key].length > 0 ? <Tag bordered={false}>{filesBySource[key].length}</Tag> : null}
+                </Space>
               </Radio.Button>
             ))}
           </Radio.Group>
@@ -218,17 +318,20 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
         {uploadSection}
       </Form>
     ),
-    [compact, disabled, form, uploadSection]
+    [compact, disabled, filesBySource, form, uploadSection]
   );
 
   return {
     form,
     formElement,
     getPayload,
+    getAllPayloads,
     reset,
     sourceType,
     bankImportMode,
     isOcrMode,
+    hasExcelFiles,
+    hasOcrFiles,
   };
 }
 

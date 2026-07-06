@@ -11,6 +11,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 
 @dataclass
 class BankQueryFilters:
+    quick_query: str = ""
     bank_type: str = ""
     person_name: str = ""
     acct_no: str = ""
@@ -285,6 +286,34 @@ class BankQueryService:
         )
 
     def _append_filters(self, sql_parts: list[str], params: list[Any], filters: BankQueryFilters) -> None:
+        for token in self._quick_tokens(filters.quick_query):
+            aliases = self._quick_aliases(token)
+            token_clause = " OR ".join(
+                [
+                    """
+                    COALESCE(t.bank_name, '') LIKE ?
+                    OR COALESCE(t.source_name, '') LIKE ?
+                    OR COALESCE(t.person_name, '') LIKE ?
+                    OR COALESCE(t.acct_no, '') LIKE ?
+                    OR COALESCE(t.counterparty_name, '') LIKE ?
+                    OR COALESCE(t.counterparty_account, '') LIKE ?
+                    OR COALESCE(t.txn_direction, '') LIKE ?
+                    OR COALESCE(t.summary, '') LIKE ?
+                    OR COALESCE(t.remark, '') LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM std_bank_account a2
+                        WHERE a2.acct_no=t.acct_no AND COALESCE(a2.person_name,'') LIKE ?
+                    )
+                    """
+                    for _ in aliases
+                ]
+            )
+            sql_parts.append(
+                f" AND ({token_clause})"
+            )
+            for alias in aliases:
+                like = f"%{alias}%"
+                params.extend([like, like, like, like, like, like, like, like, like, like])
         if filters.bank_type:
             sql_parts.append(" AND COALESCE(t.bank_name, '') LIKE ?")
             params.append(f"%{filters.bank_type}%")
@@ -325,6 +354,17 @@ class BankQueryService:
         if filters.amount_min is not None or filters.amount_max is not None:
             return "by_amount_time"
         return "by_time_only"
+
+    def _quick_tokens(self, query: str) -> list[str]:
+        return [token for token in re.split(r"\s+", (query or "").strip()) if token]
+
+    def _quick_aliases(self, token: str) -> list[str]:
+        aliases = {token}
+        if token in {"收入", "转入", "收款", "入账", "进账"}:
+            aliases.update({"收入", "入", "转入", "收款", "贷", "贷方"})
+        if token in {"支出", "转出", "付款", "出账", "支付"}:
+            aliases.update({"支出", "出", "转出", "付款", "借", "借方"})
+        return [item for item in aliases if item]
 
     def _ensure_desc_templates(self) -> None:
         defaults = {
@@ -379,6 +419,8 @@ class BankQueryService:
         parts: list[str] = []
         if filters.bank_type:
             parts.append(f"银行类型={filters.bank_type}")
+        if filters.quick_query:
+            parts.append(f"模糊关键词={filters.quick_query}")
         if filters.person_name:
             parts.append(f"姓名={filters.person_name}")
         if filters.acct_no:

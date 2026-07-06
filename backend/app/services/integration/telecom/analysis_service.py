@@ -17,6 +17,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 class TelecomAnalysisFilters:
     """Filter options for telecom CDR analysis."""
 
+    quick_query: str = ""
     local_phone: str = ""
     peer_phone: str = ""
     call_type: str = ""
@@ -242,6 +243,29 @@ class TelecomAnalysisService:
         return "unknown"
 
     def _match_filters(self, row: dict[str, Any], filters: TelecomAnalysisFilters) -> bool:
+        for token in self._quick_tokens(filters.quick_query):
+            haystack = " ".join(
+                self._to_text(row.get(key))
+                for key in (
+                    "local_phone_display",
+                    "peer_phone_display",
+                    "local_phone_norm",
+                    "peer_phone_norm",
+                    "call_type",
+                    "bill_type",
+                    "direction",
+                    "local_carrier",
+                    "peer_carrier",
+                    "local_location",
+                    "peer_location",
+                    "group_name",
+                    "group_no",
+                    "forward_caller",
+                    "source",
+                )
+            )
+            if token not in haystack and token not in DIRECTION_TEXT.get(self._to_text(row.get("direction")), ""):
+                return False
         if filters.local_phone:
             haystack = f"{row.get('local_phone_display', '')} {row.get('local_phone_norm', '')}"
             if filters.local_phone not in haystack:
@@ -334,6 +358,17 @@ class TelecomAnalysisService:
         if text.lower() == "nan":
             return ""
         return text
+
+    def _quick_tokens(self, query: str) -> list[str]:
+        return [token for token in re.split(r"\s+", (query or "").strip()) if token]
+
+
+DIRECTION_TEXT = {
+    "outbound": "主叫 呼出 发送",
+    "inbound": "被叫 呼入 接收",
+    "sms": "短信",
+    "unknown": "其他",
+}
 
 
 __all__ = ["TelecomAnalysisFilters", "TelecomAnalysisService"]

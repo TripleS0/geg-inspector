@@ -14,6 +14,7 @@ from app.application.bootstrap import bootstrap_database
 from app.application.dataset_use_cases import DatasetUseCase
 from app.application.export_use_cases import ExportUseCase
 from app.application.task_store import TaskStore
+from app.services.integration.bank.query_service import BankQueryFilters
 from app.services.shared.db.sqlite_client import SqliteClient
 
 
@@ -203,6 +204,30 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.records[0]["person_name"], "张三")
         self.assertIn("交易总览", result.description)
+
+    def test_bank_analysis_quick_query_matches_all_tokens(self) -> None:
+        self.client.execute(
+            "INSERT INTO std_bank_txn(import_batch_id, bank_name, source_sheet, template_fingerprint, source_name,"
+            " acct_no, person_name, txn_time, txn_amount, currency, txn_direction,"
+            " counterparty_name, counterparty_account, summary, balance, raw_payload)"
+            " VALUES ('batch-Q', '建设银行', 's', 'fp', '来源',"
+            " '6222001', '李芳', '2026-02-01 09:00:00', '200.00', 'CNY', '收入',"
+            " '李军', '8888', '转账', '1000.00', '{}');"
+        )
+        self.client.execute(
+            "INSERT INTO std_bank_txn(import_batch_id, bank_name, source_sheet, template_fingerprint, source_name,"
+            " acct_no, person_name, txn_time, txn_amount, currency, txn_direction,"
+            " counterparty_name, counterparty_account, summary, balance, raw_payload)"
+            " VALUES ('batch-Q', '工商银行', 's', 'fp', '来源',"
+            " '6222002', '李芳', '2026-02-01 10:00:00', '300.00', 'CNY', '收入',"
+            " '李军', '9999', '转账', '1300.00', '{}');"
+        )
+        result = BankAnalysisUseCase(self.client).query_records(
+            "batch-Q",
+            BankQueryFilters(quick_query="李芳 建设 李军"),
+        )
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["bank_type"], "建设银行")
 
     def test_commercial_risk_lists_after_no_run(self) -> None:
         uc = CommercialRiskUseCase(self.client)

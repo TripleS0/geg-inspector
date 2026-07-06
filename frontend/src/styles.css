@@ -1092,6 +1092,38 @@ html, body, #root {
   margin-top: 6px;
 }
 
+.metric-card {
+  min-height: 116px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(92, 112, 148, 0.1);
+}
+
+.metric-title {
+  padding: 12px 16px;
+  color: #25272d;
+  border-bottom: 1px solid rgba(92, 112, 148, 0.08);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.metric-value {
+  padding: 18px 16px 20px;
+  color: #24262d;
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+}
+
+.metric-primary {
+  color: #e85d45;
+}
+
+.metric-secondary {
+  color: #f2bd55;
+}
+
 .analysis-description {
   display: grid;
   gap: 10px;
@@ -1110,6 +1142,76 @@ html, body, #root {
 .analysis-empty {
   margin: 0 !important;
   color: #8a7380;
+}
+
+.bank-advanced-filter,
+.analysis-advanced-filter {
+  margin-top: 14px;
+  padding: 14px 14px 2px;
+  border-radius: 14px;
+  background: rgba(255, 248, 238, 0.62);
+  border: 1px solid rgba(224, 128, 74, 0.12);
+}
+
+.bank-anomaly-panel {
+  margin-top: 16px;
+}
+
+.bank-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.bank-anomaly-card {
+  width: 100%;
+  min-height: 116px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(226, 118, 68, 0.12);
+  box-shadow: 0 10px 24px rgba(133, 78, 43, 0.06);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.bank-anomaly-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(217, 72, 50, 0.28);
+  box-shadow: 0 14px 30px rgba(172, 83, 39, 0.1);
+}
+
+.bank-anomaly-card.is-hot {
+  background: linear-gradient(135deg, rgba(255, 246, 230, 0.98), rgba(255, 255, 255, 0.92));
+}
+
+.bank-anomaly-card span,
+.bank-anomaly-card strong,
+.bank-anomaly-card em {
+  display: block;
+}
+
+.bank-anomaly-card span {
+  color: #6f625d;
+  font-weight: 700;
+}
+
+.bank-anomaly-card strong {
+  margin-top: 8px;
+  color: #d94832;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.bank-anomaly-card em {
+  margin-top: 8px;
+  color: #8a7a73;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .evidence-list {

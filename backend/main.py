@@ -112,6 +112,7 @@ class BankOcrHeaderPayload(BaseModel):
 class BankFilterRequest(BaseModel):
     """Bank filter payload."""
 
+    quick_query: str = ""
     bank_type: str = ""
     person_name: str = ""
     acct_no: str = ""
@@ -132,9 +133,16 @@ class BankFilterRequest(BaseModel):
         return BankQueryFilters(**data)
 
 
+class BankRecordsExportRequest(BankFilterRequest):
+    """Export current bank filtered records."""
+
+    file_name: str = ""
+
+
 class CommercialAnalysisFilterRequest(BaseModel):
     """Commercial bid analysis filter payload."""
 
+    quick_query: str = ""
     company_name: str = ""
     purchaser: str = ""
     inquiry_no: str = ""
@@ -154,6 +162,7 @@ class CommercialAnalysisFilterRequest(BaseModel):
 class WechatAnalysisFilterRequest(BaseModel):
     """WeChat transfer analysis filter payload."""
 
+    quick_query: str = ""
     user_name: str = ""
     debit_credit_type: str = ""
     counterparty_name: str = ""
@@ -175,6 +184,7 @@ class WechatAnalysisFilterRequest(BaseModel):
         else:  # pragma: no cover - pydantic v1 fallback
             data = self.dict()
         return WechatAnalysisFilters(
+            quick_query=data.get("quick_query", ""),
             user_name=data.get("user_name", ""),
             debit_credit_type=data.get("debit_credit_type", ""),
             counterparty_name=data.get("counterparty_name", ""),
@@ -227,6 +237,7 @@ class GraphSelectionDetailPayload(BaseModel):
 class TelecomAnalysisFilterRequest(BaseModel):
     """Telecom CDR analysis filter payload."""
 
+    quick_query: str = ""
     local_phone: str = ""
     peer_phone: str = ""
     call_type: str = ""
@@ -249,6 +260,7 @@ class TelecomAnalysisFilterRequest(BaseModel):
         else:  # pragma: no cover - pydantic v1 fallback
             data = self.dict()
         return TelecomAnalysisFilters(
+            quick_query=data.get("quick_query", ""),
             local_phone=data.get("local_phone", ""),
             peer_phone=data.get("peer_phone", ""),
             call_type=data.get("call_type", ""),
@@ -356,6 +368,22 @@ class QichachaExportRowsBody(BaseModel):
 
     rows: List[Dict[str, Any]] = Field(default_factory=list)
     run_id: Optional[str] = None
+
+
+class ExportRowsColumn(BaseModel):
+    """Column definition for generic table export."""
+
+    key: str
+    title: str
+
+
+class ExportRowsPayload(BaseModel):
+    """Generic rows-to-Excel export payload."""
+
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[ExportRowsColumn] = Field(default_factory=list)
+    file_name: str = "records"
+    sheet_name: str = "明细"
 
 
 class QichachaIngestProfileBody(BaseModel):
@@ -577,6 +605,78 @@ def persist_qichacha_query_logs(log_rows: List[Tuple[Any, ...]]) -> None:
         """,
         log_rows,
     )
+
+
+def bank_records_to_excel_bytes(rows: List[Dict[str, Any]]) -> bytes:
+    """Build an Excel workbook for filtered bank records."""
+
+    try:
+        import pandas as pd
+    except ImportError as err:  # pragma: no cover - deployment dependency guard
+        raise HTTPException(status_code=500, detail="缺少 pandas/openpyxl，无法导出 Excel") from err
+
+    from io import BytesIO
+
+    headers = [
+        ("txn_time", "时间"),
+        ("bank_type", "银行"),
+        ("person_name", "姓名"),
+        ("acct_no", "账号/卡号"),
+        ("txn_direction", "方向"),
+        ("amount", "金额"),
+        ("balance", "余额"),
+        ("counterparty_name", "对手"),
+        ("counterparty_account", "对手账号"),
+        ("txn_desc", "摘要"),
+        ("remark", "备注"),
+        ("data_source", "数据来源"),
+    ]
+    data = [{label: row.get(key, "") for key, label in headers} for row in rows]
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(data).to_excel(writer, index=False, sheet_name="命中记录")
+        ws = writer.sheets.get("命中记录")
+        if ws is not None:
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                letter = col[0].column_letter
+                max_len = max(len(str(cell.value or "")) for cell in col[:80])
+                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 32)
+    return buffer.getvalue()
+
+
+def rows_to_excel_bytes(rows: List[Dict[str, Any]], columns: List[ExportRowsColumn], sheet_name: str = "明细") -> bytes:
+    """Build an Excel workbook from UI table rows."""
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="没有可导出的数据")
+    try:
+        import pandas as pd
+    except ImportError as err:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="缺少 pandas/openpyxl，无法导出 Excel") from err
+
+    from io import BytesIO
+
+    active_columns = columns or [
+        ExportRowsColumn(key=key, title=key)
+        for key in rows[0].keys()
+    ]
+    data = [
+        {col.title: row.get(col.key, "") for col in active_columns}
+        for row in rows
+    ]
+    safe_sheet = (sheet_name or "明细").strip()[:31] or "明细"
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(data).to_excel(writer, index=False, sheet_name=safe_sheet)
+        ws = writer.sheets.get(safe_sheet)
+        if ws is not None:
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                letter = col[0].column_letter
+                max_len = max(len(str(cell.value or "")) for cell in col[:80])
+                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 36)
+    return buffer.getvalue()
 
 
 def create_app() -> FastAPI:
@@ -1308,6 +1408,20 @@ def create_app() -> FastAPI:
     def bank_records(batch_id: str, payload: BankFilterRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().query_records(batch_id, payload.to_filters()).to_dict()
 
+    @app.post("/api/bank/{batch_id}/records/export")
+    def export_bank_records(batch_id: str, payload: BankRecordsExportRequest) -> Response:
+        result = BankAnalysisUseCase().query_records(batch_id, payload.to_filters())
+        if not result.records:
+            raise HTTPException(status_code=400, detail="当前筛选没有可导出的记录")
+        blob = bank_records_to_excel_bytes(result.records)
+        safe_name = re.sub(r'[\\/:*?"<>|\s]+', "_", (payload.file_name or "").strip())[:80]
+        fname = f"{safe_name or 'bank_records'}_{batch_id[:8]}.xlsx"
+        return Response(
+            content=blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
     @app.post("/api/bank/{batch_id}/modules/{module_id}")
     def bank_module(batch_id: str, module_id: str, payload: ModuleRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().run_module(batch_id, module_id, payload.to_params())
@@ -1438,6 +1552,16 @@ def create_app() -> FastAPI:
             background_tasks,
             "export_commercial_analysis",
             lambda: ExportUseCase().export_commercial_analysis_report(batch_id, payload.output_path).to_dict(),
+        )
+
+    @app.post("/api/export/rows")
+    def export_rows(payload: ExportRowsPayload) -> Response:
+        blob = rows_to_excel_bytes(payload.rows, payload.columns, payload.sheet_name)
+        safe_name = re.sub(r'[\\/:*?"<>|\s]+', "_", (payload.file_name or "records").strip())[:80] or "records"
+        return Response(
+            content=blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'},
         )
 
     @app.post("/api/qichacha/basic-details/query")

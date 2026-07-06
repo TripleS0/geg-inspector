@@ -38,6 +38,7 @@ function BatchesPage() {
   const [renameBatchId, setRenameBatchId] = useState<string>("");
   const [renameValue, setRenameValue] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -50,6 +51,9 @@ function BatchesPage() {
         api.listCases(),
       ]);
       setItems(data.items);
+      setSelectedBatchIds((prev) =>
+        prev.filter((id) => data.items.some((item) => item.import_batch_id === id) && !mapData.items[id])
+      );
       setBatchCaseMap(mapData.items);
       setCases(caseData.items.map((c) => ({ case_id: c.case_id, case_name: c.case_name, batch_count: c.batch_count })));
       const stored = Number(localStorage.getItem(CASE_STORAGE_KEY)) || null;
@@ -93,6 +97,7 @@ function BatchesPage() {
     try {
       await api.deleteBatch(row.import_batch_id);
       setItems((prev) => prev.filter((item) => item.import_batch_id !== row.import_batch_id));
+      setSelectedBatchIds((prev) => prev.filter((id) => id !== row.import_batch_id));
       message.success("已删除该批次及相关数据");
       void fetchData();
     } catch (err) {
@@ -150,6 +155,33 @@ function BatchesPage() {
     } finally {
       setRenameSaving(false);
     }
+  };
+
+  const deleteSelectedBatches = () => {
+    const deletableIds = selectedBatchIds.filter((id) => !batchCaseMap[id]);
+    if (!deletableIds.length) {
+      message.warning("请选择未绑定案件的批次");
+      return;
+    }
+    Modal.confirm({
+      title: `确认删除 ${deletableIds.length} 个批次？`,
+      content: "将删除所选批次的 raw/std 与元数据；商务网会清除匹配与风险结果，工商会清除主体及依赖匹配行。不可恢复。",
+      okText: "删除选中批次",
+      okType: "danger",
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          for (const batchId of deletableIds) {
+            await api.deleteBatch(batchId);
+          }
+          message.success(`已删除 ${deletableIds.length} 个批次`);
+          setSelectedBatchIds([]);
+          await fetchData();
+        } catch (err) {
+          message.error((err as Error).message);
+        }
+      },
+    });
   };
 
   const selectedCase = cases.find((item) => item.case_id === selectedCaseId) ?? null;
@@ -310,6 +342,9 @@ function BatchesPage() {
             value={filter}
             onChange={(val) => setFilter(val as Source)}
           />
+          <Button danger disabled={!selectedBatchIds.length} onClick={deleteSelectedBatches}>
+            删除选中批次（{selectedBatchIds.length}）
+          </Button>
           <Button onClick={fetchData}>刷新</Button>
         </Space>
       </div>
@@ -321,6 +356,16 @@ function BatchesPage() {
         columns={columns}
         dataSource={items}
         loading={loading}
+        rowSelection={{
+          selectedRowKeys: selectedBatchIds,
+          onChange: (keys) => setSelectedBatchIds(keys.map(String)),
+          getCheckboxProps: (row) => ({
+            disabled: Boolean(batchCaseMap[row.import_batch_id]),
+            title: batchCaseMap[row.import_batch_id]
+              ? `已绑定案件「${batchCaseMap[row.import_batch_id].case_name}」，请先解绑`
+              : undefined,
+          }),
+        }}
         pagination={{ pageSize: 10 }}
         size="small"
       />

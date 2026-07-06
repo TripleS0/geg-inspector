@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Col, Form, InputNumber, Row, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
+import { Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, Table, Tag, Typography, message } from "antd";
+import { DownloadOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -20,18 +21,15 @@ function formatAmount(value: unknown) {
   return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function renderDescription(text: string) {
-  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return <Paragraph className="analysis-empty">暂无描述</Paragraph>;
-  return (
-    <div className="analysis-description">
-      {lines.map((line, index) => (
-        <Paragraph key={`${index}-${line}`} className="analysis-description-line">
-          {line}
-        </Paragraph>
-      ))}
-    </div>
-  );
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function CommercialAnalysisPage() {
@@ -43,6 +41,7 @@ function CommercialAnalysisPage() {
   const [records, setRecords] = useState<CommercialAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -176,6 +175,26 @@ function CommercialAnalysisPage() {
     []
   );
 
+  const exportRows = async (
+    rows: Record<string, unknown>[],
+    columns: Array<{ key: string; title: string }>,
+    suffix: string,
+  ) => {
+    if (!rows.length) {
+      message.warning(`当前没有可导出的${suffix}`);
+      return;
+    }
+    try {
+      const currentBatch = batches.find((item) => item.import_batch_id === batchId);
+      const fileName = `${batchLabel(currentBatch || { import_batch_id: batchId })}_${suffix}`;
+      const blob = await api.exportRowsToExcel(rows, columns, fileName, suffix);
+      downloadBlob(blob, `${fileName}.xlsx`);
+      message.success(`${suffix}已导出`);
+    } catch (err) {
+      message.error((err as Error).message || "导出失败");
+    }
+  };
+
   return (
     <Card className="app-card" bordered={false}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -199,63 +218,84 @@ function CommercialAnalysisPage() {
       </Paragraph>
 
       <Form layout="vertical" form={filter} initialValues={{ only_winners: false }}>
-        <Row gutter={12}>
-          <Col span={6}>
-            <Form.Item name="company_name" label="企业">
-              <Select allowClear showSearch options={(filterOptions.company_name || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="purchaser" label="采购单位">
-              <Select allowClear showSearch options={(filterOptions.purchaser || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="inquiry_no" label="询价单号">
-              <Select allowClear showSearch options={(filterOptions.inquiry_no || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="winner" label="中标供应商">
-              <Select allowClear showSearch options={(filterOptions.winner || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="amount_min" label="中标金额下限">
-              <InputNumber min={0} style={{ width: "100%" }} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="amount_max" label="中标金额上限">
-              <InputNumber min={0} style={{ width: "100%" }} />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item name="only_winners" label="仅看中标企业" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          </Col>
-        </Row>
+        <Form.Item
+          name="quick_query"
+          label="快速筛选"
+          tooltip="多个关键词用空格隔开，会匹配企业、采购单位、询价单号、中标供应商、物资/项目、数据来源等字段"
+        >
+          <Input.Search
+            allowClear
+            size="large"
+            placeholder="例如：华南机电 供电公司 中标"
+            enterButton="快速筛选"
+            loading={loading}
+            onSearch={() => void runQuery()}
+          />
+        </Form.Item>
         <Space>
           <Button type="primary" loading={loading} onClick={() => void runQuery()}>查询并生成统计</Button>
+          <Button icon={advancedOpen ? <UpOutlined /> : <DownOutlined />} onClick={() => setAdvancedOpen((open) => !open)}>
+            更多筛选
+          </Button>
           <Button onClick={() => filter.resetFields()}>重置</Button>
         </Space>
+        {advancedOpen ? (
+          <div className="analysis-advanced-filter">
+            <Row gutter={12}>
+              <Col span={6}>
+                <Form.Item name="company_name" label="企业">
+                  <Select allowClear showSearch options={(filterOptions.company_name || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="purchaser" label="采购单位">
+                  <Select allowClear showSearch options={(filterOptions.purchaser || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="inquiry_no" label="询价单号">
+                  <Select allowClear showSearch options={(filterOptions.inquiry_no || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="winner" label="中标供应商">
+                  <Select allowClear showSearch options={(filterOptions.winner || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="amount_min" label="中标金额下限">
+                  <InputNumber min={0} style={{ width: "100%" }} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="amount_max" label="中标金额上限">
+                  <InputNumber min={0} style={{ width: "100%" }} />
+                </Form.Item>
+              </Col>
+              <Col span={6}>
+                <Form.Item name="only_winners" label="仅看中标企业" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+              </Col>
+            </Row>
+          </div>
+        ) : null}
       </Form>
 
       {records && (
         <>
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col span={6}>
-              <div className="kpi-tile"><div className="label">询价单数量</div><div className="value">{records.summary.inquiry_count}</div></div>
+              <div className="metric-card"><div className="metric-title">询价单数量</div><div className="metric-value">{records.summary.inquiry_count}</div></div>
             </Col>
             <Col span={6}>
-              <div className="kpi-tile"><div className="label">参与企业数</div><div className="value">{records.summary.company_count}</div></div>
+              <div className="metric-card"><div className="metric-title">参与企业数</div><div className="metric-value">{records.summary.company_count}</div></div>
             </Col>
             <Col span={6}>
-              <div className="kpi-tile"><div className="label">中标企业数</div><div className="value">{records.summary.winner_company_count}</div></div>
+              <div className="metric-card"><div className="metric-title">中标企业数</div><div className="metric-value">{records.summary.winner_company_count}</div></div>
             </Col>
             <Col span={6}>
-              <div className="kpi-tile"><div className="label">中标金额合计</div><div className="value">{formatAmount(records.summary.total_win_amount)}</div></div>
+              <div className="metric-card"><div className="metric-title">中标金额合计</div><div className="metric-value metric-primary">{formatAmount(records.summary.total_win_amount)}</div></div>
             </Col>
           </Row>
 
@@ -274,15 +314,30 @@ function CommercialAnalysisPage() {
             </Col>
           </Row>
 
-          <div className="app-card" style={{ marginTop: 16 }}>
-            <Title level={5}>统计描述</Title>
-            {renderDescription(records.description)}
-          </div>
-
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col span={12}>
               <div className="app-card">
-                <Title level={5}>企业中标统计</Title>
+                <div className="bank-section-head">
+                  <Title level={5} style={{ margin: 0 }}>企业中标统计</Title>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={!records.summary.company_summary.length}
+                    onClick={() => void exportRows(
+                      records.summary.company_summary as Record<string, unknown>[],
+                      [
+                        { key: "company_name", title: "企业" },
+                        { key: "participation_count", title: "参标次数" },
+                        { key: "win_count", title: "中标次数" },
+                        { key: "win_amount", title: "中标金额" },
+                        { key: "risk_level", title: "风险等级" },
+                        { key: "risk_score", title: "风险分" },
+                      ],
+                      "企业中标统计"
+                    )}
+                  >
+                    导出Excel
+                  </Button>
+                </div>
                 <Table
                   rowKey={(r) => String(r.company_norm || r.company_name)}
                   size="small"
@@ -296,7 +351,29 @@ function CommercialAnalysisPage() {
             </Col>
             <Col span={12}>
               <div className="app-card">
-                <Title level={5}>中标资金关联</Title>
+                <div className="bank-section-head">
+                  <Title level={5} style={{ margin: 0 }}>中标资金关联</Title>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={!records.summary.fund_links.length}
+                    onClick={() => void exportRows(
+                      records.summary.fund_links as Record<string, unknown>[],
+                      [
+                        { key: "company_name", title: "企业" },
+                        { key: "purchaser", title: "采购单位" },
+                        { key: "inquiry_no", title: "询价单号" },
+                        { key: "winner", title: "中标供应商" },
+                        { key: "win_amount", title: "中标金额" },
+                        { key: "risk_level", title: "风险等级" },
+                        { key: "risk_score", title: "风险分" },
+                        { key: "source", title: "数据来源" },
+                      ],
+                      "中标资金关联"
+                    )}
+                  >
+                    导出Excel
+                  </Button>
+                </div>
                 <Table
                   rowKey={(r, idx) => `${r.company_name}-${r.inquiry_no}-${idx}`}
                   size="small"
@@ -311,7 +388,29 @@ function CommercialAnalysisPage() {
           </Row>
 
           <div className="app-card" style={{ marginTop: 16 }}>
-            <Title level={5}>查询明细（前 500 行）</Title>
+            <div className="bank-section-head">
+              <Title level={5} style={{ margin: 0 }}>查询明细（前 500 行）</Title>
+              <Button
+                icon={<DownloadOutlined />}
+                disabled={!records.records.length}
+                onClick={() => void exportRows(
+                  records.records as unknown as Record<string, unknown>[],
+                  [
+                    { key: "inquiry_no", title: "询价单号" },
+                    { key: "purchaser", title: "采购单位" },
+                    { key: "company_name", title: "企业" },
+                    { key: "is_winner", title: "是否中标" },
+                    { key: "winner", title: "中标供应商" },
+                    { key: "win_amount", title: "中标金额" },
+                    { key: "item_name", title: "物资/项目" },
+                    { key: "source", title: "数据来源" },
+                  ],
+                  "商务网查询明细"
+                )}
+              >
+                导出Excel
+              </Button>
+            </div>
             <Table<CommercialAnalysisRecord>
               rowKey={(r, idx) => `${r.inquiry_no}-${r.company_name}-${idx}`}
               size="small"

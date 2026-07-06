@@ -67,23 +67,36 @@ function ImportPage() {
   const onSubmitExcel = async () => {
     if (running) return;
     try {
-      const { values, files } = await importForm.getPayload();
+      const payloads = await importForm.getAllPayloads();
       setRunning(true);
       setResultLogs([]);
-      setProgress({ percent: 5, message: "上传文件中…" });
-      const { task_id } = await api.uploadFiles(
-        values.source_type,
-        files,
-        values.bank_name || "默认来源",
-        values.batch_name
-      );
-      const status = await pollTask(task_id, (t) =>
-        setProgress({ percent: Math.max(t.progress, 10), message: t.message })
-      );
-      setProgress({ percent: 100, message: status.message });
-      setResultLogs(buildReadableLogs({ ...(status.result || {}), batch_name: values.batch_name || "" }));
-      setBatchCount((prev) => prev + 1);
-      message.success("导入完成，可继续进入批次管理绑定案件");
+      const logs: string[] = [];
+      for (let index = 0; index < payloads.length; index += 1) {
+        const { values, files } = payloads[index];
+        const startPercent = Math.round((index / payloads.length) * 100);
+        const endPercent = Math.round(((index + 1) / payloads.length) * 100);
+        setProgress({
+          percent: Math.max(startPercent, 5),
+          message: `正在导入 ${values.batch_name || "未命名批次"}（${index + 1}/${payloads.length}）…`,
+        });
+        const { task_id } = await api.uploadFiles(
+          values.source_type,
+          files,
+          values.bank_name || "默认来源",
+          values.batch_name
+        );
+        const status = await pollTask(task_id, (t) =>
+          setProgress({
+            percent: Math.max(startPercent + Math.round((t.progress / 100) * (endPercent - startPercent)), 10),
+            message: `${values.batch_name || "未命名批次"}：${t.message}`,
+          })
+        );
+        logs.push(...buildReadableLogs({ ...(status.result || {}), batch_name: values.batch_name || "" }));
+      }
+      setProgress({ percent: 100, message: "全部导入完成" });
+      setResultLogs(logs);
+      setBatchCount((prev) => prev + payloads.length);
+      message.success("全部导入完成，可继续进入批次管理绑定案件");
     } catch (err) {
       message.error((err as Error).message || "导入失败");
     } finally {
@@ -143,7 +156,7 @@ function ImportPage() {
         {importForm.formElement}
         <Space>
           <Button type="primary" loading={running} onClick={onSubmit}>
-            {importForm.isOcrMode ? "开始 OCR 识别" : "开始导入"}
+            {importForm.isOcrMode ? "开始 OCR 识别" : "开始导入全部文件"}
           </Button>
           <Button
             onClick={() => {

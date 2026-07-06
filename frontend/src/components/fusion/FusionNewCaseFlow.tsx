@@ -83,8 +83,23 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
       setStep(1);
       return;
     }
-    if (!queue.length) {
-      message.warning("请至少添加一批导入数据");
+
+    let importQueue = queue;
+    if (!importQueue.length) {
+      try {
+        const payloads = await importForm.getAllPayloads();
+        importQueue = payloads.map((payload, index) => ({
+          ...payload,
+          id: `direct-${index}-${payload.values.batch_name || payload.files[0]?.name}`,
+        }));
+      } catch (err) {
+        message.warning((err as Error).message || "请至少选择一批导入数据");
+        return;
+      }
+    }
+
+    if (!importQueue.length) {
+      message.warning("请至少选择一批导入数据");
       return;
     }
 
@@ -101,14 +116,14 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
       const batchIds: string[] = [];
       const uploadWeight = 70;
 
-      for (let index = 0; index < queue.length; index += 1) {
-        const item = queue[index];
+      for (let index = 0; index < importQueue.length; index += 1) {
+        const item = importQueue[index];
         const { values, files } = item;
         const label = SOURCE_LABELS[values.source_type];
-        const base = 8 + Math.round((index / queue.length) * uploadWeight);
+        const base = 8 + Math.round((index / importQueue.length) * uploadWeight);
         setProgress({
           percent: base,
-          message: `正在导入${label}（${index + 1}/${queue.length}）…`,
+          message: `正在导入${label}（${index + 1}/${importQueue.length}）…`,
         });
 
         const { task_id } = await api.uploadFiles(
@@ -118,7 +133,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
           values.batch_name
         );
         const status = await pollTask(task_id, (task) => {
-          const slice = uploadWeight / queue.length;
+          const slice = uploadWeight / importQueue.length;
           setProgress({
             percent: Math.min(8 + uploadWeight, base + Math.round((task.progress / 100) * slice * 0.9)),
             message: task.message || `正在导入${label}…`,
@@ -287,7 +302,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                 type="primary"
                 size="large"
                 loading={running}
-                disabled={phase === "importing" || !queue.length}
+                disabled={phase === "importing" || (!queue.length && !importForm.hasExcelFiles)}
                 onClick={() => void startImport()}
               >
                 开始导入

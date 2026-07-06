@@ -16,6 +16,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 class WechatAnalysisFilters:
     """Filter options for WeChat transfer analysis."""
 
+    quick_query: str = ""
     user_name: str = ""
     debit_credit_type: str = ""
     counterparty_name: str = ""
@@ -175,6 +176,28 @@ class WechatAnalysisService:
         return records
 
     def _match_filters(self, row: dict[str, Any], filters: WechatAnalysisFilters) -> bool:
+        for token in self._quick_tokens(filters.quick_query):
+            haystack = " ".join(
+                self._to_text(row.get(key))
+                for key in (
+                    "user_name",
+                    "user_id",
+                    "debit_credit_type",
+                    "business_type",
+                    "purpose_type",
+                    "counterparty_name",
+                    "counterparty_bank_name",
+                    "user_bank_card",
+                    "counterparty_bank_card",
+                    "remark1",
+                    "remark2",
+                    "txn_no",
+                    "large_no",
+                    "source",
+                )
+            )
+            if not any(alias in haystack for alias in self._quick_aliases(token, filters)):
+                return False
         if filters.user_name and filters.user_name not in self._to_text(row.get("user_name")):
             return False
         if filters.debit_credit_type and filters.debit_credit_type != self._to_text(row.get("debit_credit_type")):
@@ -259,6 +282,19 @@ class WechatAnalysisService:
         if text.lower() == "nan":
             return ""
         return text
+
+    def _quick_tokens(self, query: str) -> list[str]:
+        return [token for token in re.split(r"\s+", (query or "").strip()) if token]
+
+    def _quick_aliases(self, token: str, filters: WechatAnalysisFilters) -> list[str]:
+        aliases = {token}
+        if token in {"收入", "转入", "收款", "入账", "进账"}:
+            aliases.update(filters.income_types or ("入",))
+            aliases.update({"入", "收入", "转入", "收款", "入账", "进账"})
+        if token in {"支出", "转出", "付款", "出账", "支付"}:
+            aliases.update(filters.expense_types or ("出",))
+            aliases.update({"出", "支出", "转出", "付款", "出账", "支付"})
+        return [item for item in aliases if item]
 
 
 __all__ = ["WechatAnalysisFilters", "WechatAnalysisService"]

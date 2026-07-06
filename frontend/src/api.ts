@@ -21,6 +21,7 @@ export interface TablePreview {
 }
 
 export interface BankFilter {
+  quick_query?: string;
   bank_type?: string;
   person_name?: string;
   acct_no?: string;
@@ -147,6 +148,7 @@ export interface DataCenterDashboardResponse {
 }
 
 export interface CommercialAnalysisFilter {
+  quick_query?: string;
   company_name?: string;
   purchaser?: string;
   inquiry_no?: string;
@@ -188,6 +190,7 @@ export interface CommercialAnalysisResponse {
 }
 
 export interface WechatAnalysisFilter {
+  quick_query?: string;
   user_name?: string;
   debit_credit_type?: string;
   counterparty_name?: string;
@@ -239,6 +242,7 @@ export interface WechatAnalysisResponse {
 }
 
 export interface TelecomAnalysisFilter {
+  quick_query?: string;
   local_phone?: string;
   peer_phone?: string;
   call_type?: string;
@@ -917,6 +921,25 @@ export const api = {
       body: JSON.stringify(filters),
     }),
 
+  exportBankRecords: async (batchId: string, filters: BankFilter, fileName?: string) => {
+    const res = await fetch(`${API_BASE}/api/bank/${encodeURIComponent(batchId)}/records/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...filters, file_name: fileName || "" }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
+
   bankModule: (batchId: string, moduleId: string, params: ModuleParams) =>
     http<Record<string, unknown>>(
       `/api/bank/${encodeURIComponent(batchId)}/modules/${encodeURIComponent(moduleId)}`,
@@ -983,6 +1006,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ output_path: outputPath || null }),
     }),
+
+  exportRowsToExcel: async (
+    rows: Record<string, unknown>[],
+    columns: Array<{ key: string; title: string }>,
+    fileName: string,
+    sheetName = "明细"
+  ) => {
+    const res = await fetch(`${API_BASE}/api/export/rows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, columns, file_name: fileName, sheet_name: sheetName }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
 
   qichachaQueryLogs: (limit = 100, offset = 0, runId?: string) =>
     http<{ items: QichachaLogItem[] }>(
