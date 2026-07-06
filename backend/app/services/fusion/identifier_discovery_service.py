@@ -9,6 +9,8 @@ from typing import Any
 from app.services.fusion.identifier_norm import normalize_identifier, parse_person_names_from_json_field
 from app.services.shared.db.sqlite_client import SqliteClient
 
+_SOURCE_PRIORITY = {"enterprise": 3, "bank": 2, "commercial": 1, "wechat": 1, "telecom": 1}
+
 
 @dataclass
 class DiscoveryResult:
@@ -110,7 +112,8 @@ class IdentifierDiscoveryService:
             return False
         existing = self._client.query_all(
             """
-            SELECT candidate_id, review_status FROM rel_identifier_candidate
+            SELECT candidate_id, review_status, source_type, source_ref_json
+            FROM rel_identifier_candidate
             WHERE case_id=? AND identifier_type=? AND identifier_norm=?;
             """,
             (case_id, identifier_type, identifier_norm),
@@ -119,6 +122,24 @@ class IdentifierDiscoveryService:
             status = str(existing[0][1])
             if status in {"linked", "no_match"}:
                 return False
+            new_source = str(item.get("source_type") or "")
+            old_source = str(existing[0][2] or "")
+            if self._should_upgrade_candidate_source(identifier_type, old_source, new_source):
+                self._client.execute(
+                    """
+                    UPDATE rel_identifier_candidate
+                    SET display_value=?, source_type=?, source_batch_id=?, source_ref_json=?
+                    WHERE candidate_id=?;
+                    """,
+                    (
+                        str(item.get("display_value") or identifier_norm),
+                        new_source,
+                        str(item.get("source_batch_id") or ""),
+                        json.dumps(item.get("source_ref") or {}, ensure_ascii=False),
+                        int(existing[0][0]),
+                    ),
+                )
+                return True
             return False
         self._client.execute(
             """
@@ -138,6 +159,18 @@ class IdentifierDiscoveryService:
             ),
         )
         return True
+
+    def _should_upgrade_candidate_source(
+        self,
+        identifier_type: str,
+        old_source: str,
+        new_source: str,
+    ) -> bool:
+        if identifier_type != "enterprise_name":
+            return False
+        old_rank = _SOURCE_PRIORITY.get(old_source, 0)
+        new_rank = _SOURCE_PRIORITY.get(new_source, 0)
+        return new_rank > old_rank
 
     def _is_already_linked(self, case_id: int, identifier_type: str, identifier_norm: str) -> bool:
         rows = self._client.query_all(

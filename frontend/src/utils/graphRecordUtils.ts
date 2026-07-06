@@ -1,5 +1,12 @@
 import type { FusionRecord, GraphExploreEdge, GraphExploreNode } from "../api";
 
+type GraphNodeLookup = Map<string, GraphExploreNode> | GraphExploreNode[];
+
+function labelForNode(nodeId: string, nodes: GraphNodeLookup) {
+  if (Array.isArray(nodes)) return nodes.find((node) => node.id === nodeId)?.label || nodeId;
+  return nodes.get(nodeId)?.label || nodeId;
+}
+
 const RECORD_TYPE_LABELS: Record<string, string> = {
   bank_txn: "银行流水",
   wechat: "微信转账",
@@ -39,7 +46,10 @@ export function normalizeGraphSampleRecord(
   };
 }
 
-export function recordsFromEdge(edge: GraphExploreEdge): FusionRecord[] {
+export function recordsFromEdge(
+  edge: GraphExploreEdge,
+  parties?: { partyA?: string; partyB?: string }
+): FusionRecord[] {
   const out: FusionRecord[] = [];
   const seen = new Set<string>();
   for (const raw of edge.sample_records || []) {
@@ -48,8 +58,31 @@ export function recordsFromEdge(edge: GraphExploreEdge): FusionRecord[] {
     const key = JSON.stringify(rec.source_ref);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(rec);
+    out.push({ ...rec, flow_party_a: parties?.partyA, flow_party_b: parties?.partyB });
   }
+  return out;
+}
+
+export function recordsFromPath(
+  path: { nodes: string[]; edges: string[] },
+  edges: GraphExploreEdge[],
+  nodes: GraphNodeLookup
+): FusionRecord[] {
+  const edgeMap = new Map(edges.map((edge) => [edge.id, edge]));
+  const out: FusionRecord[] = [];
+  const seen = new Set<string>();
+  path.edges.forEach((edgeId, hopIndex) => {
+    const edge = edgeMap.get(edgeId);
+    if (!edge) return;
+    const partyA = labelForNode(path.nodes[hopIndex], nodes);
+    const partyB = labelForNode(path.nodes[hopIndex + 1], nodes);
+    for (const rec of recordsFromEdge(edge, { partyA, partyB })) {
+      const key = `${edge.id}:${JSON.stringify(rec.source_ref)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(rec);
+    }
+  });
   return out;
 }
 

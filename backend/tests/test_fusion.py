@@ -262,6 +262,123 @@ class FusionTests(unittest.TestCase):
         types = {l["identifier_type"] for l in wang["links"]}  # type: ignore[union-attr]
         self.assertTrue({"person_name", "bank_acct", "phone"}.issubset(types))
 
+    def test_auto_link_enterprise_to_legal_person(self) -> None:
+        batch_ent = "batch-ent-legal"
+        batch_bank = "batch-bank-legal"
+        self.client.execute(
+            """
+            INSERT INTO std_enterprise_profile(
+                import_batch_id, source_file_name, enterprise_name, enterprise_name_norm,
+                credit_code, legal_person, shareholders_json, key_persons_json, raw_payload
+            ) VALUES (?, 'e.xlsx', '广州瀚海科技有限公司', '广州瀚海科技有限公司', '91440101MA5HAI001X',
+                '林浩然', '["刘芳（持股30%）"]', '["周明（监事）"]', '{}');
+            """,
+            (batch_ent,),
+        )
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('bank.xlsx', '/tmp/bank.xlsx', 'h1', 'CCB', 'bank', ?, 'imported');",
+            (batch_bank,),
+        )
+        self.client.execute(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, mobile, id_no, source_name, raw_payload
+            ) VALUES (?, 'CCB', 's', 'fp', '林浩然', '6217001000100010001', '13810001001', '440103198503120001', 'src', '{}');
+            """,
+            (batch_bank,),
+        )
+        self.client.execute(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, mobile, id_no, source_name, raw_payload
+            ) VALUES (?, 'CCB', 's', 'fp', '刘芳', '6212261000500050001', '13510005005', '440103198811020005', 'src', '{}');
+            """,
+            (batch_bank,),
+        )
+        case = self.case_uc.create_case(case_name="工商法人关联")
+        self.case_uc.bind_batches(case.case_id, [batch_ent, batch_bank])
+        self.fusion_uc.auto_link(case.case_id, rediscover=True)
+
+        persons = {p["display_name"]: p for p in self.fusion_uc.list_persons(case.case_id)}
+        lin = persons["林浩然"]
+        liu = persons["刘芳"]
+        lin_ent = [l for l in lin["links"] if l["identifier_type"] == "enterprise_name"]
+        liu_ent = [l for l in liu["links"] if l["identifier_type"] == "enterprise_name"]
+        self.assertEqual(len(lin_ent), 1)
+        self.assertEqual(lin_ent[0]["identifier_value"], "广州瀚海科技有限公司")
+        self.assertEqual(liu_ent, [])
+
+        pending_ent = [
+            c for c in self.fusion_uc.list_candidates(case.case_id)
+            if c["identifier_type"] == "enterprise_name"
+        ]
+        self.assertEqual(pending_ent, [])
+
+    def test_auto_link_enterprise_when_commercial_candidate_exists(self) -> None:
+        batch_ent = "batch-ent-comm-dup"
+        batch_comm = "batch-comm-dup"
+        self.client.execute(
+            """
+            INSERT INTO std_enterprise_profile(
+                import_batch_id, source_file_name, enterprise_name, enterprise_name_norm,
+                credit_code, legal_person, shareholders_json, key_persons_json, raw_payload
+            ) VALUES (?, 'e.xlsx', '广州瀚海科技有限公司', '广州瀚海科技有限公司', '91440101MA5HAI001X',
+                '林浩然', '[]', '[]', '{}');
+            """,
+            (batch_ent,),
+        )
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('comm.xlsx', '/tmp/c.xlsx', 'h3', '商务', 'commercial', ?, 'imported');",
+            (batch_comm,),
+        )
+        self.client.execute(
+            """
+            CREATE TABLE IF NOT EXISTS raw_comm_ent_dup (
+                raw_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                import_batch_id TEXT,
+                bank_name TEXT,
+                source_type TEXT,
+                source_file_id INTEGER,
+                source_sheet TEXT,
+                template_fingerprint TEXT,
+                row_no INTEGER,
+                raw_payload TEXT,
+                src_公司名称 TEXT
+            );
+            """
+        )
+        self.client.execute(
+            """
+            INSERT INTO raw_comm_ent_dup(
+                import_batch_id, bank_name, source_type, source_file_id, source_sheet,
+                template_fingerprint, row_no, raw_payload, src_公司名称
+            ) VALUES (?, '商务', 'commercial', 1, 'sheet1', 'fp', 1, '{}', '广州瀚海科技有限公司');
+            """,
+            (batch_comm,),
+        )
+        self.client.execute(
+            """
+            INSERT INTO meta_bank_sheets(file_id, sheet_name, header_row_no, template_fingerprint, source_type, raw_table_name, rows_imported)
+            SELECT file_id, 'sheet1', 1, 'fp', 'commercial', 'raw_comm_ent_dup', 1
+            FROM meta_bank_files WHERE import_batch_id=? LIMIT 1;
+            """,
+            (batch_comm,),
+        )
+        case = self.case_uc.create_case(case_name="商务工商重复企业")
+        self.case_uc.bind_batches(case.case_id, [batch_comm, batch_ent])
+        self.fusion_uc.discover(case.case_id)
+        self.fusion_uc.auto_link(case.case_id, rediscover=False)
+
+        persons = {p["display_name"]: p for p in self.fusion_uc.list_persons(case.case_id)}
+        lin = persons["林浩然"]
+        ent = [l for l in lin["links"] if l["identifier_type"] == "enterprise_name"]
+        self.assertEqual(len(ent), 1)
+        self.assertEqual(ent[0]["identifier_value"], "广州瀚海科技有限公司")
+
     def test_mark_no_match_and_record_detail(self) -> None:
         batch_id = "batch-ent-1"
         self.client.execute(

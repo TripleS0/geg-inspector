@@ -10,6 +10,11 @@ from uuid import uuid4
 import pandas as pd
 
 from app.services.integration.bank.ingest_service import BankIngestService, IngestResult
+from app.services.integration.commercial.flat_ingest import (
+    detect_flat_format,
+    parse_new_commercial_sheet,
+    parse_old_commercial_sheet,
+)
 
 
 class CommercialIngestService(BankIngestService):
@@ -89,7 +94,7 @@ class CommercialIngestService(BankIngestService):
 
             try:
                 workbook = self._read_workbook_fallback(path, pd)
-                detail_df = self._parse_commercial_workbook(workbook)
+                detail_df = self._parse_commercial_workbook(workbook, bank_name=bank_name)
             except Exception as err:
                 failed_files += 1
                 self._write_log(import_batch_id, file_path, "error", f"商务网解析失败: {err}")
@@ -151,7 +156,7 @@ class CommercialIngestService(BankIngestService):
             failed_files=failed_files,
         )
 
-    def _parse_commercial_workbook(self, workbook: dict[str, Any]) -> pd.DataFrame:
+    def _parse_commercial_workbook(self, workbook: dict[str, Any], bank_name: str = "") -> pd.DataFrame:
         """Parse workbook into normalized line-level commercial rows."""
         header_ctx: dict[str, str] = {}
         records: list[dict[str, str]] = []
@@ -159,6 +164,25 @@ class CommercialIngestService(BankIngestService):
             if raw_df is None or raw_df.empty:
                 continue
             df = raw_df.astype(object).fillna("")
+            flat_format = detect_flat_format(df)
+            if flat_format == "old":
+                records.extend(
+                    parse_old_commercial_sheet(
+                        df,
+                        purchaser=bank_name,
+                        output_columns=self.OUTPUT_COLUMNS,
+                    )
+                )
+                continue
+            if flat_format == "new":
+                records.extend(
+                    parse_new_commercial_sheet(
+                        df,
+                        purchaser=bank_name,
+                        output_columns=self.OUTPUT_COLUMNS,
+                    )
+                )
+                continue
             if df.shape[1] <= 8:
                 header_ctx.update(self._extract_header_context(df))
                 continue

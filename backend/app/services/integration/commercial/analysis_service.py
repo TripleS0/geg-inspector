@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import zipfile
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -25,7 +27,10 @@ class CommercialAnalysisFilters:
     winner: str = ""
     amount_min: float | None = None
     amount_max: float | None = None
+    participation_min: int | None = None
     only_winners: bool = False
+    start_time: str = ""
+    end_time: str = ""
 
 
 class CommercialAnalysisService:
@@ -52,10 +57,25 @@ class CommercialAnalysisService:
     ) -> dict[str, Any]:
         active = filters or CommercialAnalysisFilters()
         records = [r for r in self._load_records(commercial_batch_id) if self._match_filters(r, active)]
-        records = records[: max(1, min(int(limit), 10000))]
+
+        if active.participation_min is not None and int(active.participation_min) > 0:
+            min_count = int(active.participation_min)
+            pref_summary = self.summarize(records, commercial_batch_id)
+            allowed = {
+                c["company_norm"]
+                for c in pref_summary["company_summary"]
+                if int(c["participation_count"]) >= min_count
+            }
+            records = [
+                r
+                for r in records
+                if normalize_enterprise_name(self._to_text(r.get("company_name"))) in allowed
+            ]
+
         summary = self.summarize(records, commercial_batch_id)
+        records_out = records[: max(1, min(int(limit), 10000))]
         return {
-            "records": records,
+            "records": records_out,
             "summary": summary,
             "description": self.render_description(summary),
         }
@@ -349,6 +369,7 @@ class CommercialAnalysisService:
                         "quote_price": self._to_text(row.get("含税单价(元)")),
                         "quantity": self._to_text(row.get("数量")),
                         "remark": self._to_text(row.get("备注")),
+                        "inquiry_time": self._extract_inquiry_time(row),
                     }
                 )
         return records
@@ -403,12 +424,62 @@ class CommercialAnalysisService:
             return False
         if filters.amount_max is not None and amount > float(filters.amount_max):
             return False
+        inquiry_time = self._parse_time(row.get("inquiry_time"))
+        if filters.start_time or filters.end_time:
+            if inquiry_time is None:
+                return False
+            if filters.start_time:
+                start = self._parse_time(filters.start_time)
+                if start and inquiry_time < start:
+                    return False
+            if filters.end_time:
+                end = self._parse_time(filters.end_time)
+                if end and inquiry_time > end:
+                    return False
         return True
+
+    @staticmethod
+    def _parse_time(value: Any) -> datetime | None:
+        text = CommercialAnalysisService._to_text(value)
+        if not text:
+            return None
+        normalized = text.replace("/", "-").replace("T", " ")
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(normalized[:19])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _extract_inquiry_time(row: dict[str, str]) -> str:
+        for key in ("提交人/时间", "报价截止时间", "公布中标信息", "要求到货日期"):
+            text = CommercialAnalysisService._to_text(row.get(key))
+            if not text:
+                continue
+            match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?)", text)
+            if match:
+                return match.group(1).replace("/", "-")
+        return ""
 
     @staticmethod
     def _fill_forward(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         out: list[dict[str, str]] = []
-        carry: dict[str, str] = {"数据来源": "", "询价单号": "", "公司名称": "", "采购单位": ""}
+        carry: dict[str, str] = {
+            "数据来源": "",
+            "询价单号": "",
+            "公司名称": "",
+            "采购单位": "",
+            "提交人/时间": "",
+            "报价截止时间": "",
+        }
         for row in rows:
             item = dict(row)
             for key in carry:
@@ -430,9 +501,16 @@ class CommercialAnalysisService:
         values: set[str] = set()
         for record in records:
             for winner in _split_company_names(str(record.get("winner") or "")):
-                if winner:
+                if winner and not CommercialAnalysisService._looks_like_datetime_winner(winner):
                     values.add(winner)
         return sorted(values)[:1000]
+
+    @staticmethod
+    def _looks_like_datetime_winner(text: str) -> bool:
+        value = (text or "").strip()
+        if not value:
+            return False
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2}:\d{2})?$", value))
 
     @staticmethod
     def _to_text(value: Any) -> str:

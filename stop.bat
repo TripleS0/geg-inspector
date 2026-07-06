@@ -1,8 +1,8 @@
 @echo off
-echo 正在关闭 DataFusionX...
+echo Stopping DataFusionX...
 
 docker compose down
 
-echo 系统已关闭
+echo System stopped.
 
 pause

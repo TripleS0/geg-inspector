@@ -5,7 +5,7 @@ import {
   Card,
   Checkbox,
   Col,
-  Collapse,
+  Divider,
   Descriptions,
   Empty,
   List,
@@ -14,7 +14,6 @@ import {
   Select,
   Space,
   Spin,
-  Statistic,
   Table,
   Tag,
   Typography,
@@ -22,7 +21,6 @@ import {
 } from "antd";
 import {
   ArrowLeftOutlined,
-  BranchesOutlined,
   ClearOutlined,
   EyeOutlined,
   FileSearchOutlined,
@@ -58,6 +56,7 @@ import {
   formatFusionAmount,
   recordsForGraphSelection,
   recordsFromEdge,
+  recordsFromPath,
 } from "../utils/graphRecordUtils";
 
 const { Title, Text, Paragraph } = Typography;
@@ -375,6 +374,55 @@ function relationColor(type: string) {
   return RELATION_EDGE_COLORS[type] || RELATION_OPTIONS.find((item) => item.value === type)?.color || "#94a3b8";
 }
 
+function relationShortLabel(type: string) {
+  return RELATION_OPTIONS.find((item) => item.value === type)?.label || type;
+}
+
+function PathTraceView({
+  path,
+  nodes,
+  edges,
+  compact = false,
+}: {
+  path: GraphExplorePath;
+  nodes: GraphExploreNode[];
+  edges: GraphExploreEdge[];
+  compact?: boolean;
+}) {
+  const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const edgeMap = useMemo(() => new Map(edges.map((edge) => [edge.id, edge])), [edges]);
+  const pathType = path.relation_types.length === 1 ? path.relation_types[0] : null;
+
+  return (
+    <div className={`graph-path-trace${compact ? " graph-path-trace--compact" : ""}`}>
+      {pathType ? (
+        <Tag color={relationColor(pathType)} className="graph-path-trace-badge">
+          {relationShortLabel(pathType)}
+        </Tag>
+      ) : null}
+      <div className="graph-path-trace-chain">
+        {path.nodes.map((nodeId, index) => {
+          const label = nodeMap.get(nodeId)?.label || nodeId;
+          const edge = index > 0 ? edgeMap.get(path.edges[index - 1]) : null;
+          return (
+            <span key={`${path.id}-${nodeId}-${index}`} className="graph-path-trace-step">
+              {index > 0 && edge ? (
+                <span className="graph-path-hop">
+                  <span className="graph-path-hop-arrow" aria-hidden />
+                  <Tag color={relationColor(edge.type)} className="graph-path-hop-tag">
+                    {edge.display_type}
+                  </Tag>
+                </span>
+              ) : null}
+              <span className="graph-path-node">{label}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const RELATION_CURVE_ORDER = ["bank_txn", "wechat", "telecom", "enterprise", "commercial", "identifier"] as const;
 
 /** 各关系类型默认占据不同弧道；同向时再叠加序号偏移 */
@@ -552,6 +600,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   const [selectedPathEdgeIds, setSelectedPathEdgeIds] = useState<Set<string>>(new Set());
   const [activePath, setActivePath] = useState<GraphExplorePath | null>(null);
   const [viewMode, setViewMode] = useState<"all" | "paths" | "common">("all");
+  const [pathHopFilter, setPathHopFilter] = useState<string>("all");
   const [observations, setObservations] = useState<GraphObservationItem[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [graphFullscreen, setGraphFullscreen] = useState(false);
@@ -560,19 +609,22 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   const graphChartRef = useRef<ReactECharts>(null);
   const { openRecords, drawers } = useFusionRecordDrawers(caseId);
 
-  const refreshCases = useCallback(async () => {
+  const refreshCases = useCallback(async (preferredId?: number | null) => {
     const res = await api.listCases();
     setCases(res.items);
     const paramCase = searchParams.get("case");
     const stored = localStorage.getItem(CASE_STORAGE_KEY);
-    const preferred = paramCase ? Number(paramCase) : stored ? Number(stored) : res.items[0]?.case_id ?? null;
+    const fallback = paramCase ? Number(paramCase) : stored ? Number(stored) : res.items[0]?.case_id ?? null;
+    const preferred = preferredId ?? fallback;
     const next = res.items.some((item) => item.case_id === preferred) ? preferred : res.items[0]?.case_id ?? null;
     setCaseId(next);
+    setObservations(next ? loadGraphObservations(next) : []);
     setData(null);
     setSelectedNode(null);
     setSelectedEdge(null);
     setAnchorCenter(null);
     setAnchorTarget(null);
+    setPersons([]);
   }, [searchParams]);
 
   useEffect(() => {
@@ -580,8 +632,9 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   }, [refreshCases]);
 
   useEffect(() => {
-    const onCaseChanged = () => {
-      void refreshCases().catch((err) => message.error((err as Error).message));
+    const onCaseChanged = (event: Event) => {
+      const nextCaseId = (event as CustomEvent<{ caseId?: number | null }>).detail?.caseId ?? null;
+      void refreshCases(nextCaseId).catch((err) => message.error((err as Error).message));
     };
     window.addEventListener(CASE_CHANGED_EVENT, onCaseChanged);
     return () => window.removeEventListener(CASE_CHANGED_EVENT, onCaseChanged);
@@ -591,7 +644,10 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   const hasBoundBatch = (selectedCase?.batch_count ?? 0) > 0;
 
   useEffect(() => {
-    if (!caseId) return;
+    if (!caseId) {
+      setObservations([]);
+      return;
+    }
     localStorage.setItem(CASE_STORAGE_KEY, String(caseId));
     setObservations(loadGraphObservations(caseId));
     if (searchParams.get("case") !== String(caseId)) {
@@ -602,18 +658,20 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   }, [caseId, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!caseId || !hasBoundBatch) {
-      setData(null);
-      setPersons([]);
-      setAnchorCenter(null);
-      setAnchorTarget(null);
-      setSelectedNode(null);
-      setSelectedEdge(null);
-      return;
-    }
     setData(null);
     setSelectedNode(null);
     setSelectedEdge(null);
+    setSelectedPathEdgeIds(new Set());
+    setActivePath(null);
+    setViewMode("all");
+    setPathHopFilter("all");
+
+    if (!caseId || !hasBoundBatch) {
+      setPersons([]);
+      setAnchorCenter(null);
+      setAnchorTarget(null);
+      return;
+    }
     void api
       .listCasePersons(caseId)
       .then((res) => {
@@ -668,11 +726,13 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
         include_sample_records: true,
       });
       setData(res);
+      setPathHopFilter("all");
       if (anchorTarget && anchorTarget.key !== anchorCenter.key && res.paths.length) {
         const firstPath = res.paths[0];
         setActivePath(firstPath);
         setSelectedPathEdgeIds(new Set(firstPath.edges));
         setViewMode("paths");
+        setPathHopFilter(String(firstPath.length));
       } else {
         setActivePath(null);
         setSelectedPathEdgeIds(new Set());
@@ -806,7 +866,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   );
 
   const chartOption = useMemo(() => {
-    if (!data?.nodes.length) return null;
+    if (!data?.nodes.length || !caseId || !hasBoundBatch) return null;
     const visibleNodeIds = new Set<string>();
     data.edges.forEach((edge) => {
       if (visibleEdgeIds.has(edge.id)) {
@@ -984,6 +1044,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
     setSelectedNode(null);
     setSelectedEdge(null);
     setViewMode("paths");
+    setPathHopFilter(String(path.length));
   }, []);
 
   useEffect(() => {
@@ -995,11 +1056,39 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
 
   const observationKeys = useMemo(() => new Set(observations.map((item) => item.key)), [observations]);
 
+  const displayPaths = useMemo(() => {
+    if (!data?.paths.length) return [] as GraphExplorePath[];
+    const seen = new Set<string>();
+    const result: GraphExplorePath[] = [];
+    for (const path of data.paths) {
+      if (path.relation_types.length !== 1) continue;
+      const relationType = path.relation_types[0];
+      const key = `${relationType}::${path.nodes.join("->")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(path);
+    }
+    return result;
+  }, [data?.paths]);
+
+  const summaryPaths = useMemo(() => {
+    if (!displayPaths.length) return [] as GraphExplorePath[];
+    const hop = pathHopFilter === "all" ? null : Number(pathHopFilter);
+    if (!hop || Number.isNaN(hop)) return displayPaths;
+    return displayPaths.filter((path) => path.length === hop);
+  }, [displayPaths, pathHopFilter]);
+
+  const summaryHopOptions = useMemo(() => {
+    if (!displayPaths.length) return [{ label: "全部跳数", value: "all" }];
+    const hops = Array.from(new Set(displayPaths.map((path) => path.length))).sort((a, b) => a - b);
+    return [{ label: "全部跳数", value: "all" }, ...hops.map((hop) => ({ label: `${hop} 跳`, value: String(hop) }))];
+  }, [displayPaths]);
+
   const addSelectionToObservation = useCallback(() => {
     if (!caseId || !data) return;
     if (activePath && viewMode === "paths" && !selectedNode && !selectedEdge) {
       const pathEdges = data.edges.filter((edge) => activePath.edges.includes(edge.id));
-      const records = pathEdges.flatMap((edge) => recordsFromEdge(edge));
+      const records = recordsFromPath(activePath, data.edges, data.nodes);
       const item = createPathObservation(activePath, data.nodes, pathEdges, records);
       if (observationKeys.has(item.key)) {
         message.info("该路径已在观察区");
@@ -1087,8 +1176,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
         return;
       }
       if (activePath && data && viewMode === "paths") {
-        const pathEdges = data.edges.filter((edge) => activePath.edges.includes(edge.id));
-        const records = pathEdges.flatMap((edge) => recordsFromEdge(edge));
+        const records = recordsFromPath(activePath, data.edges, data.nodes);
         const pathLabels = activePath.nodes.map(
           (nodeId) => data.nodes.find((node) => node.id === nodeId)?.label || nodeId
         );
@@ -1103,6 +1191,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
           detailKind: "edge",
           partyA: firstLabel,
           partyB: lastLabel !== firstLabel ? lastLabel : "",
+          pathParties: pathLabels,
         });
       }
     } catch (err) {
@@ -1150,12 +1239,23 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
           return;
         }
         if (item.kind === "path" && item.path) {
-          const pathEdges = item.pathEdges || data?.edges.filter((edge) => item.path?.edges.includes(edge.id)) || [];
           const records =
-            item.records && item.records.length
-              ? item.records
-              : pathEdges.flatMap((edge) => recordsFromEdge(edge));
+            data?.edges && data?.nodes
+              ? recordsFromPath(item.path, data.edges, data.nodes)
+              : item.records && item.records.length
+                ? item.records
+                : (item.pathEdges || data?.edges.filter((edge) => item.path?.edges.includes(edge.id)) || []).flatMap(
+                    (edge) => {
+                      const source = data?.nodes.find((node) => node.id === edge.source);
+                      const target = data?.nodes.find((node) => node.id === edge.target);
+                      return recordsFromEdge(edge, {
+                        partyA: source?.label || edge.source,
+                        partyB: target?.label || edge.target,
+                      });
+                    }
+                  );
           const pathLabels =
+            item.pathNodes?.map((node) => node.label) ||
             item.path.nodes.map(
               (nodeId) => data?.nodes.find((node) => node.id === nodeId)?.label || nodeId
             ) || [];
@@ -1169,6 +1269,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
             detailKind: "edge",
             partyA: firstLabel,
             partyB: lastLabel !== firstLabel ? lastLabel : "",
+            pathParties: pathLabels,
           });
         }
       } catch (err) {
@@ -1217,6 +1318,14 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
   );
 
   const showHero = !cockpitMode && !embedded;
+  const showSummaryPanel = Boolean(data && (anchorTarget || data.paths.length > 0) && anchorCenter);
+  const shouldHideSummaryDetails = Boolean(!anchorTarget && anchorCenter && !data?.paths.length);
+
+  const graphEmptyDescription = !caseId
+    ? "请先选择案件"
+    : !hasBoundBatch
+      ? "当前案件无绑定批次，暂无图谱数据"
+      : "请在筛选区选择中心对象并开始分析";
 
   return (
     <div className={`graph-explore-page${cockpitMode ? " graph-explore-cockpit" : ""}`}>
@@ -1322,59 +1431,103 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
             </Col>
           </Row>
 
-          {data ? (
-            <Collapse
-              ghost
-              className="graph-filter-collapse"
-              items={[
-                {
-                  key: "summary",
-                  label: `探索概要 · 节点 ${data.summary.node_count} · 关系 ${data.summary.edge_count}`,
-                  children: (
-                    <div className="graph-filter-summary">
-                      <Row gutter={[10, 10]}>
-                        <Col span={6}><Statistic title="路径" value={data.summary.path_count} /></Col>
-                        <Col span={6}><Statistic title="共同关联" value={data.summary.common_neighbor_count} /></Col>
-                      </Row>
-                      <List
-                        size="small"
-                        header={
-                          anchorTarget
-                            ? `${anchorCenter?.label || "中心"} ↔ ${anchorTarget.label} 关键路径`
-                            : "两点间关键路径"
-                        }
-                        dataSource={data.paths}
-                        locale={{ emptyText: anchorTarget ? "两点之间暂无连通路径" : "填写路径终点后显示路径" }}
-                        renderItem={(path) => (
-                          <List.Item
-                            className={`graph-clickable-row${activePath?.id === path.id ? " graph-path-item-active" : ""}`}
+          {showSummaryPanel && data ? (
+            <div className="graph-summary-shell">
+              <div className="graph-summary-header">
+                <div className="graph-summary-header-main">
+                  <Text className="graph-summary-kicker">探索概要</Text>
+                  <div className="graph-summary-title-row">
+                    {anchorTarget ? (
+                      <Text strong className="graph-summary-route">
+                        {anchorCenter?.label || "中心"} ↔ {anchorTarget.label}
+                      </Text>
+                    ) : (
+                      <Text strong>{anchorCenter?.label || "中心对象"}</Text>
+                    )}
+                  </div>
+                  <div className="graph-summary-stats">
+                    {displayPaths.length ? <span>{displayPaths.length} 路径</span> : null}
+                    {displayPaths.length ? <span className="graph-summary-stats-dot">·</span> : null}
+                    <span>{data.summary.node_count} 节点</span>
+                    <span className="graph-summary-stats-dot">·</span>
+                    <span>{data.summary.common_neighbor_count} 共同关联</span>
+                  </div>
+                </div>
+                {anchorTarget && displayPaths.length ? (
+                  <Select
+                    size="small"
+                    className="graph-summary-hop-filter"
+                    value={pathHopFilter}
+                    onChange={setPathHopFilter}
+                    options={summaryHopOptions}
+                    popupMatchSelectWidth={120}
+                  />
+                ) : null}
+              </div>
+
+              <div className="graph-summary-body">
+                {shouldHideSummaryDetails ? (
+                  <Empty
+                    className="graph-summary-single-empty"
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="仅选择中心对象，暂无路径"
+                  />
+                ) : anchorTarget ? (
+                  <>
+                    {summaryPaths.length ? (
+                      <div className="graph-summary-path-list">
+                        {summaryPaths.map((path) => (
+                          <button
+                            key={path.id}
+                            type="button"
+                            className={`graph-summary-path-card${activePath?.id === path.id ? " graph-summary-path-card--active" : ""}`}
                             onClick={() => selectPath(path)}
                           >
-                            <BranchesOutlined />
-                            <Text ellipsis>{path.nodes.map((nodeId) => data.nodes.find((node) => node.id === nodeId)?.label || nodeId).join(" → ")}</Text>
-                            <Tag color={activePath?.id === path.id ? "volcano" : undefined}>{path.length}跳</Tag>
-                          </List.Item>
-                        )}
+                            <PathTraceView path={path} nodes={data.nodes} edges={data.edges} compact />
+                            <Tag className="graph-summary-path-hop">{path.length} 跳</Tag>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <Empty
+                        className="graph-summary-single-empty"
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description={pathHopFilter === "all" ? "两点之间暂无同类型连通路径" : "当前跳数下暂无路径"}
                       />
-                      <List
-                        size="small"
-                        header="共同关联企业"
-                        dataSource={data.common_neighbors}
-                        locale={{ emptyText: anchorTarget ? "两人暂无共同关联企业" : "填写路径终点后显示共同关联企业" }}
-                        renderItem={(item) => (
-                          <List.Item className="graph-clickable-row" onClick={() => { selectNodeById(item.node_id); setViewMode("common"); }}>
-                            <Text strong>{item.label}</Text>
-                            {item.relation_types.map((type) => (
-                              <Tag key={type}>{RELATION_OPTIONS.find((r) => r.value === type)?.label || type}</Tag>
+                    )}
+
+                    {data.common_neighbors.length ? (
+                      <>
+                        <Divider className="graph-summary-divider" />
+                        <div className="graph-summary-common-block">
+                          <Text strong className="graph-summary-common-title">共同关联</Text>
+                          <div className="graph-summary-common-list">
+                            {data.common_neighbors.map((item) => (
+                              <button
+                                key={item.node_id}
+                                type="button"
+                                className="graph-summary-common-chip"
+                                onClick={() => {
+                                  selectNodeById(item.node_id);
+                                  setViewMode("common");
+                                }}
+                              >
+                                <span>{item.label}</span>
+                                {item.relation_types.map((type) => (
+                                  <Tag key={type} color={relationColor(type)}>
+                                    {relationShortLabel(type)}
+                                  </Tag>
+                                ))}
+                              </button>
                             ))}
-                          </List.Item>
-                        )}
-                      />
-                    </div>
-                  ),
-                },
-              ]}
-            />
+                          </div>
+                        </div>
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </div>
           ) : null}
         </Card>
       </section>
@@ -1391,7 +1544,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                 title={
                   <Space>
                     <NodeIndexOutlined />
-                    关系图谱
+                    {caseId ? `关系图谱 · ${selectedCase?.case_name || "未命名案件"}` : "关系图谱"}
                   </Space>
                 }
                 extra={
@@ -1461,13 +1614,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                   </>
                 ) : (
                   <div className="graph-empty" style={{ minHeight: graphFullscreen ? "calc(100vh - 148px)" : 620, flex: graphFullscreen ? 1 : undefined }}>
-                    <Empty
-                      description={
-                        !hasBoundBatch
-                          ? "当前案件无绑定批次，暂无图谱数据"
-                          : "请在筛选区选择中心对象并开始分析"
-                      }
-                    />
+                    <Empty description={graphEmptyDescription} />
                     <div className="graph-canvas-footer graph-canvas-footer--empty">{extensionLevelControl}</div>
                   </div>
                 )}
@@ -1492,7 +1639,7 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                 <List
                   size="small"
                   dataSource={observations}
-                  locale={{ emptyText: "暂无观察对象，选中节点或关系后加入" }}
+                  locale={{ emptyText: caseId ? "暂无观察对象，选中节点或关系后加入" : "请选择案件后查看观察区" }}
                   renderItem={(item) => (
                     <List.Item
                       className="graph-observation-item"
@@ -1596,12 +1743,10 @@ function GraphExplorePage({ embedded = false, cockpitMode = false }: { embedded?
                   ) : activePath && viewMode === "paths" ? (
                     <div className="graph-detail-box">
                       <Title level={5}>A-B 路径</Title>
-                      <Paragraph className="graph-path-summary">
-                        {activePath.nodes
-                          .map((nodeId) => data?.nodes.find((node) => node.id === nodeId)?.label || nodeId)
-                          .join(" → ")}
-                      </Paragraph>
-                      <Descriptions column={2} size="small" bordered>
+                      <div className="graph-path-detail-trace">
+                        <PathTraceView path={activePath} nodes={data?.nodes || []} edges={data?.edges || []} />
+                      </div>
+                      <Descriptions column={2} size="small" bordered style={{ marginTop: 12 }}>
                         <Descriptions.Item label="跳数">{activePath.length} 跳</Descriptions.Item>
                         <Descriptions.Item label="关系">{activePath.edges.length} 条</Descriptions.Item>
                       </Descriptions>

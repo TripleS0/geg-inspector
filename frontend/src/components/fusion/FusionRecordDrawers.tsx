@@ -60,6 +60,7 @@ export interface GraphRecordDrawerExtras {
   relationType?: string;
   partyA?: string;
   partyB?: string;
+  pathParties?: string[];
 }
 
 function filterRecordsByRange(records: FusionRecord[], range: [string, string] | null) {
@@ -171,6 +172,7 @@ export function useFusionRecordDrawers(caseId: number | null) {
   const [relationType, setRelationType] = useState<string | undefined>();
   const [partyA, setPartyA] = useState("");
   const [partyB, setPartyB] = useState("");
+  const [pathParties, setPathParties] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState("records");
   const [dateRange, setDateRange] = useState<[string, string] | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -191,8 +193,11 @@ export function useFusionRecordDrawers(caseId: number | null) {
       setDetailKind(extras.detailKind || "node");
       setRelationType(extras.relationType);
       const parsed = parsePartiesFromTitle(title);
-      setPartyA(extras.partyA || parsed?.partyA || "");
-      setPartyB(extras.partyB || parsed?.partyB || "");
+      const nextPartyA = extras.partyA || parsed?.partyA || "";
+      const nextPartyB = extras.partyB || parsed?.partyB || "";
+      setPartyA(nextPartyA);
+      setPartyB(nextPartyB);
+      setPathParties(extras.pathParties?.length ? extras.pathParties : nextPartyA && nextPartyB ? [nextPartyA, nextPartyB] : []);
       setActiveTab("records");
       setDateRange(null);
       setListOpen(true);
@@ -306,19 +311,25 @@ export function useFusionRecordDrawers(caseId: number | null) {
     [detailKind, edgeSummary, relationType]
   );
 
+  const bilateralFlowParties = useMemo(() => {
+    if (pathParties.length >= 2) return pathParties;
+    if (partyA && partyB) return [partyA, partyB];
+    return [];
+  }, [partyA, partyB, pathParties]);
+
   const bilateralFlowOption = useMemo(() => {
-    if (detailKind !== "edge" || !partyA || !partyB) return null;
-    const items = buildBilateralFlowItems(filteredRecords, partyA, partyB);
-    return buildBilateralFlowChartOption(items, partyA, partyB);
-  }, [detailKind, filteredRecords, partyA, partyB]);
+    if (detailKind !== "edge" || bilateralFlowParties.length < 2) return null;
+    const items = buildBilateralFlowItems(filteredRecords, bilateralFlowParties);
+    return buildBilateralFlowChartOption(items, bilateralFlowParties);
+  }, [bilateralFlowParties, detailKind, filteredRecords]);
 
   const bilateralFlowHeight = useMemo(() => {
-    if (detailKind !== "edge" || !partyA || !partyB) return 360;
-    const items = buildBilateralFlowItems(filteredRecords, partyA, partyB);
+    if (detailKind !== "edge" || bilateralFlowParties.length < 2) return 360;
+    const items = buildBilateralFlowItems(filteredRecords, bilateralFlowParties);
     const slotCount = bilateralFlowSlotCount(items);
     if (!slotCount) return 360;
     return Math.min(780, Math.max(380, slotCount * 58 + 140));
-  }, [detailKind, filteredRecords, partyA, partyB]);
+  }, [bilateralFlowParties, detailKind, filteredRecords]);
 
   const recordColumns = useMemo(
     () => [
@@ -385,7 +396,9 @@ export function useFusionRecordDrawers(caseId: number | null) {
               <>
                 <Title level={5}>双方往来</Title>
                 <Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
-                  左侧 {partyA} · 右侧 {partyB} · 箭头表示方向，线宽反映金额或通话时长，空白时段已压缩
+                  {bilateralFlowParties.length > 2
+                    ? `路径 ${bilateralFlowParties.join(" → ")} · 箭头表示方向，线宽反映金额或通话时长，空白时段已压缩`
+                    : `左侧 ${partyA} · 右侧 ${partyB} · 箭头表示方向，线宽反映金额或通话时长，空白时段已压缩`}
                 </Text>
                 <ReactECharts
                   className="graph-bilateral-chart"

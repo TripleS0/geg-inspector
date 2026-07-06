@@ -155,7 +155,10 @@ export interface CommercialAnalysisFilter {
   winner?: string;
   amount_min?: number | null;
   amount_max?: number | null;
+  participation_min?: number | null;
   only_winners?: boolean;
+  start_time?: string;
+  end_time?: string;
 }
 
 export interface CommercialAnalysisRecord {
@@ -542,6 +545,8 @@ export interface FusionRecord {
   direction?: string;
   batch_id?: string;
   role_hint?: string;
+  flow_party_a?: string;
+  flow_party_b?: string;
 }
 
 export interface PersonCockpitResponse {

@@ -3,7 +3,12 @@ set -euo pipefail
 
 echo "正在启动 DataFusionX..."
 
-docker compose up -d --build
+if docker compose up -d --no-build; then
+  :
+else
+  echo "未找到镜像，开始首次构建..."
+  docker compose up -d --build
+fi
 
 echo "系统已启动"
 

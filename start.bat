@@ -1,14 +1,18 @@
 @echo off
-echo 正在启动 DataFusionX...
+echo Starting DataFusionX...
 
-docker compose up -d --build
+docker compose up -d --no-build
 if errorlevel 1 (
-    echo 启动失败，请确认已安装 Docker Desktop 并已启动。
-    pause
-    exit /b 1
+    echo Images not found. Building now ^(first run^)...
+    docker compose up -d --build
+    if errorlevel 1 (
+        echo Startup failed. Please install and start Docker Desktop first.
+        pause
+        exit /b 1
+    )
 )
 
-echo 系统已启动
+echo System started.
 start http://localhost:8080
 
 pause

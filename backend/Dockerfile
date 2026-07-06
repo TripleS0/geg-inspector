@@ -2,31 +2,49 @@ ARG PYTHON_IMAGE=python:3.11-slim
 FROM ${PYTHON_IMAGE}
 
 ARG APT_MIRROR=mirrors.aliyun.com
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ARG PRELOAD_OCR_MODELS=0
 
 WORKDIR /app
 
-# 国内构建时 deb.debian.org 常超时，切换到可配置的 Debian 镜像源
+# 国内构建时 deb.debian.org 常超时；按顺序尝试多个 Debian 镜像（清华源在容器内常 403）
 RUN set -eux; \
     for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
-      if [ -f "$f" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" "$f"; fi; \
+      if [ -f "$f" ]; then cp "$f" "$f.orig"; fi; \
     done; \
-    for attempt in 1 2 3 4 5; do \
-      apt-get update && \
-      apt-get install -y --no-install-recommends \
-        libfreetype6 \
-        libpng16-16 \
-        libgomp1 \
-        libglib2.0-0 \
-        libgl1 \
-        poppler-utils && break; \
-      echo "apt install retry ${attempt}..."; sleep 15; \
+    installed=0; \
+    for mirror in ${APT_MIRROR} mirrors.aliyun.com mirrors.ustc.edu.cn mirrors.huaweicloud.com; do \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$f.orig" ]; then \
+          cp "$f.orig" "$f"; \
+          sed -i "s|deb.debian.org|${mirror}|g; s|security.debian.org|${mirror}|g" "$f"; \
+        fi; \
+      done; \
+      if apt-get update && apt-get install -y --no-install-recommends \
+        libfreetype6 libpng16-16 libgomp1 libglib2.0-0 libgl1 poppler-utils; then \
+        installed=1; break; \
+      fi; \
+      echo "apt install failed with mirror ${mirror}, trying next..."; \
     done; \
+    test "$installed" = "1"; \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i ${PIP_INDEX_URL}
+RUN set -eux; \
+    python -m pip install --upgrade pip; \
+    installed=0; \
+    for index in \
+      "${PIP_INDEX_URL}" \
+      "https://mirrors.aliyun.com/pypi/simple/" \
+      "https://mirrors.cloud.tencent.com/pypi/simple/" \
+      "https://repo.huaweicloud.com/repository/pypi/simple/" \
+      "https://pypi.org/simple"; do \
+      if pip install --no-cache-dir -r requirements.txt -i "${index}"; then \
+        installed=1; break; \
+      fi; \
+      echo "pip install failed with index ${index}, trying next..."; \
+    done; \
+    test "${installed}" = "1"
 
 ENV PADDLE_OCR_MODEL_DIR=/app/models/paddleocr \
     PADDLEOCR_HOME=/app/models/paddleocr \
