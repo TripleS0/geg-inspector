@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tabs, Tag, Typography, message } from "antd";
-import { DownloadOutlined, DownOutlined, UpOutlined, WarningOutlined } from "@ant-design/icons";
+import { DownloadOutlined, DownOutlined, SearchOutlined, UpOutlined, WarningOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
 import { api, BankFilter, BankRecordsResponse, BatchInfo, batchLabel, ModuleParams } from "../api";
@@ -15,6 +15,17 @@ type BankRecord = Record<string, string>;
 
 function toAmount(row: BankRecord) {
   return Math.abs(Number(String(row.amount || "0").replace(/,/g, "")) || 0);
+}
+
+function toNumeric(value: unknown) {
+  return Number(String(value || "0").replace(/,/g, "")) || 0;
+}
+
+function rowMatchesKeyword(row: Record<string, unknown>, keyword: string, keys: string[]) {
+  const tokens = keyword.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
+  const haystack = keys.map((key) => String(row[key] || "")).join(" ");
+  return tokens.every((token) => haystack.includes(token));
 }
 
 function signedAmount(row: BankRecord) {
@@ -84,6 +95,8 @@ function BankAnalysisPage() {
   const [detailTitle, setDetailTitle] = useState("");
   const [detailRows, setDetailRows] = useState<BankRecord[]>([]);
   const [moduleSortMode, setModuleSortMode] = useState<"default" | "abs_desc">("default");
+  const [recordKeyword, setRecordKeyword] = useState("");
+  const [moduleKeyword, setModuleKeyword] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -472,8 +485,63 @@ function BankAnalysisPage() {
       dataIndex,
       key: dataIndex,
       ellipsis: true,
+      sorter:
+        dataIndex === "amount" || dataIndex === "balance"
+          ? (a: BankRecord, b: BankRecord) => toNumeric(a[dataIndex]) - toNumeric(b[dataIndex])
+          : dataIndex === "txn_time"
+            ? (a: BankRecord, b: BankRecord) => String(a.txn_time || "").localeCompare(String(b.txn_time || ""))
+            : undefined,
+      render:
+        dataIndex === "txn_direction"
+          ? (value: string) => {
+              const income = String(value || "").includes("收入") || String(value || "").includes("转入");
+              return <Tag color={income ? "green" : "red"}>{value || "-"}</Tag>;
+            }
+          : dataIndex === "amount" || dataIndex === "balance"
+            ? (value: string) => <span className="analysis-table-amount">{value || "-"}</span>
+            : undefined,
     }));
   }, []);
+
+  const filteredMatchedRecords = useMemo(
+    () =>
+      ((records?.records || []) as BankRecord[])
+        .filter((row) =>
+          rowMatchesKeyword(row, recordKeyword, [
+            "bank_type",
+            "person_name",
+            "acct_no",
+            "txn_direction",
+            "amount",
+            "counterparty_name",
+            "counterparty_account",
+            "txn_desc",
+            "remark",
+          ])
+        )
+        .slice(0, 200),
+    [recordKeyword, records]
+  );
+
+  const filteredModuleHits = useMemo(
+    () =>
+      (sortedModuleHits as BankRecord[])
+        .filter((row) =>
+          rowMatchesKeyword(row, moduleKeyword, [
+            "bank_type",
+            "person_name",
+            "acct_no",
+            "txn_direction",
+            "amount",
+            "counterparty_name",
+            "counterparty_account",
+            "txn_desc",
+            "remark",
+          ])
+        )
+        .slice(0, 200),
+    [moduleKeyword, sortedModuleHits]
+  );
 
   const openDetail = (title: string, rows: BankRecord[]) => {
     setDetailTitle(title);
@@ -646,16 +714,16 @@ function BankAnalysisPage() {
                   <>
                     <Row gutter={16} style={{ marginTop: 16 }}>
                       <Col span={6}>
-                        <div className="metric-card"><div className="metric-title">交易笔数</div><div className="metric-value">{Number(records.summary.txn_count || 0)}</div></div>
+                        <div className="metric-card analysis-kpi-tile"><div className="metric-title">交易笔数</div><div className="metric-value">{Number(records.summary.txn_count || 0)}</div></div>
                       </Col>
                       <Col span={6}>
-                        <div className="metric-card"><div className="metric-title">收入总额</div><div className="metric-value metric-primary">{Number(records.summary.in_total || 0).toFixed(2)}</div></div>
+                        <div className="metric-card analysis-kpi-tile analysis-kpi-tile-alt"><div className="metric-title">收入总额</div><div className="metric-value">{Number(records.summary.in_total || 0).toFixed(2)}</div></div>
                       </Col>
                       <Col span={6}>
-                        <div className="metric-card"><div className="metric-title">支出总额</div><div className="metric-value metric-secondary">{Number(records.summary.out_total || 0).toFixed(2)}</div></div>
+                        <div className="metric-card analysis-kpi-tile analysis-kpi-tile-warm"><div className="metric-title">支出总额</div><div className="metric-value">{Number(records.summary.out_total || 0).toFixed(2)}</div></div>
                       </Col>
                       <Col span={6}>
-                        <div className="metric-card"><div className="metric-title">净额</div><div className="metric-value">{Number(records.summary.net_amount || 0).toFixed(2)}</div></div>
+                        <div className="metric-card analysis-kpi-tile analysis-kpi-tile-gold"><div className="metric-title">净额</div><div className="metric-value">{Number(records.summary.net_amount || 0).toFixed(2)}</div></div>
                       </Col>
                     </Row>
                     <div className="app-card bank-anomaly-panel">
@@ -700,23 +768,34 @@ function BankAnalysisPage() {
                         </Card>
                       </Col>
                     </Row>
-                    <div className="app-card" style={{ marginTop: 16 }}>
-                      <div className="bank-section-head">
+                    <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
+                      <div className="bank-section-head analysis-table-toolbar">
                         <Title level={5} style={{ margin: 0 }}>命中记录（前 200 行）</Title>
-                        <Button
-                          icon={<DownloadOutlined />}
-                          disabled={!records.records.length}
-                          onClick={() => void exportMatchedRecords()}
-                        >
-                          导出Excel
-                        </Button>
+                        <Space wrap>
+                          <Input
+                            allowClear
+                            prefix={<SearchOutlined />}
+                            placeholder="搜索姓名、对手、账号、摘要"
+                            value={recordKeyword}
+                            onChange={(event) => setRecordKeyword(event.target.value)}
+                            style={{ width: 260 }}
+                          />
+                          <Button
+                            icon={<DownloadOutlined />}
+                            disabled={!records.records.length}
+                            onClick={() => void exportMatchedRecords()}
+                          >
+                            导出Excel
+                          </Button>
+                        </Space>
                       </div>
                       <Table
+                        className="analysis-data-table"
                         rowKey={(r) => `${r.txn_time}-${r.acct_no}-${r.amount}-${r.counterparty_account}`}
-                        size="small"
+                        size="middle"
                         scroll={{ x: "max-content" }}
                         columns={recordColumns}
-                        dataSource={records.records.slice(0, 200)}
+                        dataSource={filteredMatchedRecords}
                         pagination={{ pageSize: 30 }}
                       />
                     </div>
@@ -777,16 +856,16 @@ function BankAnalysisPage() {
                       </div>
                       <Row gutter={16}>
                         <Col xs={24} md={6}>
-                          <div className="metric-card"><div className="metric-title">命中笔数</div><div className="metric-value">{moduleSummary.hitCount}</div></div>
+                          <div className="metric-card analysis-kpi-tile"><div className="metric-title">命中笔数</div><div className="metric-value">{moduleSummary.hitCount}</div></div>
                         </Col>
                         <Col xs={24} md={6}>
-                          <div className="metric-card"><div className="metric-title">收入合计</div><div className="metric-value metric-primary">{moneyText(moduleSummary.incomeTotal)}</div></div>
+                          <div className="metric-card analysis-kpi-tile analysis-kpi-tile-alt"><div className="metric-title">收入合计</div><div className="metric-value">{moneyText(moduleSummary.incomeTotal)}</div></div>
                         </Col>
                         <Col xs={24} md={6}>
-                          <div className="metric-card"><div className="metric-title">支出合计</div><div className="metric-value metric-secondary">{moneyText(moduleSummary.expenseTotal)}</div></div>
+                          <div className="metric-card analysis-kpi-tile analysis-kpi-tile-warm"><div className="metric-title">支出合计</div><div className="metric-value">{moneyText(moduleSummary.expenseTotal)}</div></div>
                         </Col>
                         <Col xs={24} md={6}>
-                          <div className="metric-card"><div className="metric-title">单笔最高</div><div className="metric-value">{moneyText(moduleSummary.maxAmount)}</div></div>
+                          <div className="metric-card analysis-kpi-tile analysis-kpi-tile-gold"><div className="metric-title">单笔最高</div><div className="metric-value">{moneyText(moduleSummary.maxAmount)}</div></div>
                         </Col>
                       </Row>
                       {moduleCharts.length > 0 && (
@@ -805,10 +884,18 @@ function BankAnalysisPage() {
                         </Row>
                       )}
                     </div>
-                    <div className="app-card" style={{ marginTop: 16 }}>
-                      <div className="bank-section-head">
+                    <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
+                      <div className="bank-section-head analysis-table-toolbar">
                         <Title level={5} style={{ margin: 0 }}>命中明细（前 200 行）</Title>
                         <Space>
+                          <Input
+                            allowClear
+                            prefix={<SearchOutlined />}
+                            placeholder="搜索姓名、对手、账号、摘要"
+                            value={moduleKeyword}
+                            onChange={(event) => setModuleKeyword(event.target.value)}
+                            style={{ width: 260 }}
+                          />
                           <Select
                             size="small"
                             value={moduleSortMode}
@@ -829,11 +916,12 @@ function BankAnalysisPage() {
                         </Space>
                       </div>
                       <Table
-                        size="small"
+                        className="analysis-data-table"
+                        size="middle"
                         rowKey={(r, idx) => `${idx}`}
                         scroll={{ x: "max-content" }}
                         columns={recordColumns}
-                        dataSource={sortedModuleHits.slice(0, 200)}
+                        dataSource={filteredModuleHits}
                         pagination={{ pageSize: 30 }}
                       />
                     </div>
@@ -855,8 +943,9 @@ function BankAnalysisPage() {
         }}
       >
         <Table
+          className="analysis-data-table"
           rowKey={(r, idx) => `${idx}-${r.txn_time}-${r.acct_no}-${r.amount}-${r.counterparty_account}`}
-          size="small"
+          size="middle"
           scroll={{ x: "max-content", y: 460 }}
           columns={recordColumns}
           dataSource={detailRows}

@@ -50,10 +50,11 @@ interface UseDataImportFormOptions {
   disabled?: boolean;
   allowOcr?: boolean;
   compact?: boolean;
+  hideUploadList?: boolean;
 }
 
 export function useDataImportForm(options: UseDataImportFormOptions = {}) {
-  const { disabled = false, allowOcr = true, compact = false } = options;
+  const { disabled = false, allowOcr = true, compact = false, hideUploadList = false } = options;
   const [form] = Form.useForm<DataImportFormValues>();
   const [filesBySource, setFilesBySource] = useState<Record<SourceType, UploadFile[]>>(() => createFileMap());
   const [ocrFiles, setOcrFiles] = useState<UploadFile[]>([]);
@@ -131,6 +132,28 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
       .map((item) => item.originFileObj as File | undefined)
       .filter((file): file is File => Boolean(file));
 
+  const selectedExcelPayloads = useMemo<DataImportPayload[]>(
+    () =>
+      SOURCE_KEYS.flatMap((type) => {
+        const realFiles = toRealFiles(filesBySource[type]);
+        if (!realFiles.length) return [];
+        return [{
+          values: {
+            source_type: type,
+            bank_name: bankNames[type] || "默认来源",
+            batch_name: batchNames[type] || fileNameWithoutExt(realFiles[0].name),
+          },
+          files: realFiles,
+          bankImportMode: "excel" as const,
+        }];
+      }),
+    [bankNames, batchNames, filesBySource]
+  );
+
+  const clearFilesForSource = (type: SourceType) => {
+    updateFilesForSource(type, []);
+  };
+
   const reset = () => {
     form.resetFields();
     setFilesBySource(createFileMap());
@@ -197,6 +220,7 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
                   disabled={disabled}
                   beforeUpload={() => false}
                   fileList={filesBySource.bank}
+                  showUploadList={!hideUploadList}
                   accept=".xlsx,.xls"
                   onChange={(info) => updateFilesForSource("bank", info.fileList)}
                 >
@@ -269,6 +293,7 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
           disabled={disabled}
           beforeUpload={() => false}
           fileList={activeFiles}
+          showUploadList={!hideUploadList}
           accept=".xlsx,.xls"
           onChange={(info) => updateFilesForSource(activeSource, info.fileList)}
         >
@@ -327,11 +352,13 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     getPayload,
     getAllPayloads,
     reset,
+    clearFilesForSource,
     sourceType,
     bankImportMode,
     isOcrMode,
     hasExcelFiles,
     hasOcrFiles,
+    selectedExcelPayloads,
   };
 }
 

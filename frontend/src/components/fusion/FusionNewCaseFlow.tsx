@@ -9,17 +9,13 @@ import {
   Typography,
   message,
 } from "antd";
-import { DeleteOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LeftOutlined, RightOutlined } from "@ant-design/icons";
 import { api, emitCaseChanged, persistSelectedCaseId, pollTask } from "../../api";
 import PersonLinkingPanel from "./PersonLinkingPanel";
 import { SOURCE_LABELS, SourceType } from "../data-import/constants";
-import { useDataImportForm, type DataImportPayload } from "../data-import/DataImportForm";
+import { useDataImportForm } from "../data-import/DataImportForm";
 
 const { Paragraph, Text, Title } = Typography;
-
-interface ImportQueueItem extends DataImportPayload {
-  id: string;
-}
 
 interface FusionNewCaseFlowProps {
   onComplete: (caseId: number) => void;
@@ -31,41 +27,14 @@ type FlowPhase = "draft" | "importing" | "linking";
 function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
   const [step, setStep] = useState<FlowStep>(1);
   const [caseName, setCaseName] = useState("");
-  const [queue, setQueue] = useState<ImportQueueItem[]>([]);
   const [phase, setPhase] = useState<FlowPhase>("draft");
   const [linkingCaseId, setLinkingCaseId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ percent: 0, message: "" });
-  const importForm = useDataImportForm({ allowOcr: false, compact: false });
+  const importForm = useDataImportForm({ allowOcr: false, compact: false, hideUploadList: true });
 
-  const addBatch = async () => {
-    try {
-      const payload = await importForm.getPayload();
-      if (payload.bankImportMode === "ocr") {
-        message.warning("新建案件流程暂不支持 OCR，请使用 Excel 导入");
-        return;
-      }
-      const fileKey = payload.files.map((f) => f.name).join("|");
-      const dup = queue.some(
-        (item) => item.values.source_type === payload.values.source_type && item.files.map((f) => f.name).join("|") === fileKey
-      );
-      if (dup) {
-        message.warning("该数据来源与文件已在待导入列表中，请勿重复添加");
-        return;
-      }
-      setQueue((prev) => [
-        ...prev,
-        { ...payload, id: `${Date.now()}-${payload.values.batch_name || payload.files[0]?.name}` },
-      ]);
-      importForm.reset();
-      message.success("已添加到导入队列");
-    } catch (err) {
-      message.warning((err as Error).message);
-    }
-  };
-
-  const removeBatch = (id: string) => {
-    setQueue((prev) => prev.filter((item) => item.id !== id));
+  const removeBatch = (sourceType: SourceType) => {
+    importForm.clearFilesForSource(sourceType);
   };
 
   const goNextFromStep1 = () => {
@@ -84,18 +53,12 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
       return;
     }
 
-    let importQueue = queue;
-    if (!importQueue.length) {
-      try {
-        const payloads = await importForm.getAllPayloads();
-        importQueue = payloads.map((payload, index) => ({
-          ...payload,
-          id: `direct-${index}-${payload.values.batch_name || payload.files[0]?.name}`,
-        }));
-      } catch (err) {
-        message.warning((err as Error).message || "请至少选择一批导入数据");
-        return;
-      }
+    let importQueue;
+    try {
+      importQueue = await importForm.getAllPayloads();
+    } catch (err) {
+      message.warning((err as Error).message || "请至少选择一批导入数据");
+      return;
     }
 
     if (!importQueue.length) {
@@ -239,7 +202,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
           <div className="fusion-wizard-body fusion-wizard-body-step2">
             <Title level={3} className="fusion-wizard-title">请导入数据</Title>
             <Paragraph type="secondary" className="fusion-wizard-desc">
-              选择数据来源并上传文件，可多次添加不同批次。完成后点击「开始导入」。
+              选择数据来源并上传文件，文件会自动进入待导入列表，完成后点击「开始导入」。
             </Paragraph>
 
             {phase === "importing" ? (
@@ -257,18 +220,13 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
             ) : (
               <>
                 <div className="fusion-import-form-wrap fusion-wizard-import-form">{importForm.formElement}</div>
-                <Space wrap className="fusion-wizard-import-actions">
-                  <Button size="large" icon={<PlusOutlined />} disabled={running} onClick={() => void addBatch()}>
-                    添加本批数据
-                  </Button>
-                </Space>
 
-                {queue.length > 0 ? (
+                {importForm.selectedExcelPayloads.length > 0 ? (
                   <List
                     className="fusion-import-queue fusion-wizard-import-queue"
                     bordered
-                    header={<Text strong className="fusion-wizard-queue-title">待导入（{queue.length}）</Text>}
-                    dataSource={queue}
+                    header={<Text strong className="fusion-wizard-queue-title">待导入（{importForm.selectedExcelPayloads.length}）</Text>}
+                    dataSource={importForm.selectedExcelPayloads}
                     renderItem={(item) => (
                       <List.Item
                         actions={[
@@ -278,7 +236,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                             danger
                             icon={<DeleteOutlined />}
                             disabled={running}
-                            onClick={() => removeBatch(item.id)}
+                            onClick={() => removeBatch(item.values.source_type)}
                           />,
                         ]}
                       >
@@ -302,7 +260,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                 type="primary"
                 size="large"
                 loading={running}
-                disabled={phase === "importing" || (!queue.length && !importForm.hasExcelFiles)}
+                disabled={phase === "importing" || !importForm.hasExcelFiles}
                 onClick={() => void startImport()}
               >
                 开始导入

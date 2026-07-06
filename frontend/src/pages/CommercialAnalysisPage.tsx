@@ -18,7 +18,7 @@ import {
   message,
 } from "antd";
 import type { TableColumnsType } from "antd";
-import { DownloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { DownloadOutlined, DownOutlined, SearchOutlined, UpOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -149,6 +149,7 @@ function CommercialAnalysisPage() {
   const [sortState, setSortState] = useState(DEFAULT_SORT);
   const [tablePage, setTablePage] = useState(1);
   const [tablePageSize, setTablePageSize] = useState(20);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     setTablePage(1);
@@ -500,74 +501,12 @@ function CommercialAnalysisPage() {
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="company_name" label="企业名称">
-                <Input allowClear placeholder="支持模糊匹配" prefix={<SearchOutlined />} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="purchaser" label="采购单位">
-                <Select
-                  allowClear
-                  showSearch
-                  placeholder="全部"
-                  options={(filterOptions.purchaser || []).map((v) => ({ value: v, label: v }))}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="inquiry_no" label="询价单号">
-                <Select
-                  allowClear
-                  showSearch
-                  placeholder="全部"
-                  options={(filterOptions.inquiry_no || []).map((v) => ({ value: v, label: v }))}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="winner" label="中标供应商">
-                <Select
-                  allowClear
-                  showSearch
-                  placeholder="全部"
-                  options={(filterOptions.winner || []).map((v) => ({ value: v, label: v }))}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="participation_min" label="参标次数下限">
-                <InputNumber min={1} precision={0} style={{ width: "100%" }} placeholder="不限" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="amount_min" label="中标金额下限">
-                <InputNumber min={0} style={{ width: "100%" }} placeholder="不限" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="amount_max" label="中标金额上限">
-                <InputNumber min={0} style={{ width: "100%" }} placeholder="不限" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8} lg={6}>
-              <Form.Item name="only_winners" label="仅看中标记录" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12} lg={8}>
-              <Form.Item name="date_range" label="询价日期段">
-                <RangePicker
-                  style={{ width: "100%" }}
-                  allowClear
-                  format="YYYY-MM-DD"
-                  placeholder={["开始日期", "结束日期"]}
-                />
-              </Form.Item>
-            </Col>
           </Row>
           <Space>
             <Button type="primary" loading={loading} onClick={() => void runQuery()}>查询统计</Button>
+            <Button icon={advancedOpen ? <UpOutlined /> : <DownOutlined />} onClick={() => setAdvancedOpen((open) => !open)}>
+              更多筛选
+            </Button>
             <Button
               onClick={() => {
                 filter.resetFields();
@@ -580,6 +519,77 @@ function CommercialAnalysisPage() {
               重置
             </Button>
           </Space>
+          {advancedOpen ? (
+            <div className="analysis-advanced-filter commercial-advanced-filter">
+              <Row gutter={[16, 0]}>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="company_name" label="企业名称">
+                    <Input allowClear placeholder="支持模糊匹配" prefix={<SearchOutlined />} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="purchaser" label="采购单位">
+                    <Select
+                      allowClear
+                      showSearch
+                      placeholder="全部"
+                      options={(filterOptions.purchaser || []).map((v) => ({ value: v, label: v }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="inquiry_no" label="询价单号">
+                    <Select
+                      allowClear
+                      showSearch
+                      placeholder="全部"
+                      options={(filterOptions.inquiry_no || []).map((v) => ({ value: v, label: v }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="winner" label="中标供应商">
+                    <Select
+                      allowClear
+                      showSearch
+                      placeholder="全部"
+                      options={(filterOptions.winner || []).map((v) => ({ value: v, label: v }))}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="participation_min" label="参标次数下限">
+                    <InputNumber min={1} precision={0} style={{ width: "100%" }} placeholder="不限" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="amount_min" label="中标金额下限">
+                    <InputNumber min={0} style={{ width: "100%" }} placeholder="不限" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="amount_max" label="中标金额上限">
+                    <InputNumber min={0} style={{ width: "100%" }} placeholder="不限" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8} lg={6}>
+                  <Form.Item name="only_winners" label="仅看中标记录" valuePropName="checked">
+                    <Switch />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12} lg={8}>
+                  <Form.Item name="date_range" label="询价日期段">
+                    <RangePicker
+                      style={{ width: "100%" }}
+                      allowClear
+                      format="YYYY-MM-DD"
+                      placeholder={["开始日期", "结束日期"]}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </div>
+          ) : null}
         </Form>
       </Card>
 

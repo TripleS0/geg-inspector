@@ -1124,6 +1124,46 @@ html, body, #root {
   color: #f2bd55;
 }
 
+.analysis-kpi-tile {
+  min-height: 96px;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 16px;
+  color: #fff;
+  background: linear-gradient(135deg, #ffb84d 0%, #e84933 100%);
+  box-shadow: 0 12px 28px rgba(218, 68, 42, 0.16);
+}
+
+.analysis-kpi-tile-alt {
+  background: linear-gradient(135deg, #f0a84d 0%, #d94832 100%);
+}
+
+.analysis-kpi-tile-warm {
+  background: linear-gradient(135deg, #e8954a 0%, #c73a26 100%);
+}
+
+.analysis-kpi-tile-gold {
+  background: linear-gradient(135deg, #f4c26b 0%, #d9775e 100%);
+}
+
+.analysis-kpi-tile .metric-title {
+  padding: 0;
+  border-bottom: 0;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+.analysis-kpi-tile .metric-value {
+  padding: 0;
+  margin-top: 8px;
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .analysis-description {
   display: grid;
   gap: 10px;
@@ -1151,6 +1191,10 @@ html, body, #root {
   border-radius: 14px;
   background: rgba(255, 248, 238, 0.62);
   border: 1px solid rgba(224, 128, 74, 0.12);
+}
+
+.commercial-advanced-filter {
+  margin-top: 16px;
 }
 
 .bank-anomaly-panel {
@@ -3046,6 +3090,75 @@ html, body, #root {
 
 .commercial-company-table .ant-table-tbody > tr:hover > td {
   background: rgba(255, 244, 232, 0.55);
+}
+
+.analysis-table-card {
+  border-radius: 16px;
+  border: 1px solid rgba(224, 128, 74, 0.12);
+  box-shadow: 0 12px 30px rgba(133, 78, 43, 0.06);
+}
+
+.analysis-table-toolbar {
+  margin-bottom: 16px;
+}
+
+.analysis-table-toolbar h5.ant-typography {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.analysis-table-toolbar .ant-btn {
+  height: 40px;
+  border-radius: 12px;
+  padding-inline: 18px;
+  font-weight: 600;
+}
+
+.analysis-data-table .ant-table {
+  background: transparent;
+}
+
+.analysis-data-table .ant-table-container {
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.analysis-data-table .ant-table-thead > tr > th {
+  background: rgba(255, 248, 238, 0.95) !important;
+  color: #1f232d;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(224, 128, 74, 0.12) !important;
+}
+
+.analysis-data-table .ant-table-thead > tr > th::before {
+  background-color: rgba(224, 128, 74, 0.14) !important;
+}
+
+.analysis-data-table .ant-table-tbody > tr > td {
+  color: #242936;
+  font-size: 14px;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(148, 123, 104, 0.12);
+}
+
+.analysis-data-table .ant-table-tbody > tr:hover > td {
+  background: rgba(255, 244, 232, 0.55) !important;
+}
+
+.analysis-data-table .ant-table-cell {
+  padding: 14px 12px !important;
+}
+
+.analysis-data-table .ant-pagination {
+  margin: 18px 0 0 !important;
+}
+
+.analysis-table-amount {
+  color: #b33222;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 768px) {

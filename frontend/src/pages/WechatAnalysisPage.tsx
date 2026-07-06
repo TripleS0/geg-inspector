@@ -14,10 +14,10 @@ import {
   Typography,
   message,
 } from "antd";
-import { DownloadOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
+import { DownloadOutlined, DownOutlined, SearchOutlined, UpOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
-import { api, BatchInfo, batchLabel, WechatAnalysisFilter, WechatAnalysisResponse } from "../api";
+import { api, BatchInfo, batchLabel, WechatAnalysisFilter, WechatAnalysisRecord, WechatAnalysisResponse } from "../api";
 import { chartPair, chartPalette } from "../theme";
 import { AnalysisDateTimeFilterFields, AnalysisDateTimeFormFields, serializeAnalysisDateTimeFilters } from "../components/AnalysisDateTimeFilters";
 
@@ -41,6 +41,23 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
+function recordMatchesKeyword(row: WechatAnalysisRecord, keyword: string) {
+  const tokens = keyword.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
+  const haystack = [
+    row.user_name,
+    row.debit_credit_type,
+    row.business_type,
+    row.purpose_type,
+    row.counterparty_name,
+    row.counterparty_bank_name,
+    row.remark1,
+    row.remark2,
+    row.txn_no,
+  ].join(" ");
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function WechatAnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [batches, setBatches] = useState<BatchInfo[]>([]);
@@ -50,6 +67,7 @@ function WechatAnalysisPage() {
   const [records, setRecords] = useState<WechatAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [tableKeyword, setTableKeyword] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -151,7 +169,13 @@ function WechatAnalysisPage() {
 
   const recordColumns = useMemo(
     () => [
-      { title: "交易时间", dataIndex: "txn_time", width: 170, ellipsis: true },
+      {
+        title: "交易时间",
+        dataIndex: "txn_time",
+        width: 170,
+        ellipsis: true,
+        sorter: (a: WechatAnalysisRecord, b: WechatAnalysisRecord) => a.txn_time.localeCompare(b.txn_time),
+      },
       { title: "用户", dataIndex: "user_name", width: 100, ellipsis: true },
       {
         title: "借贷类型",
@@ -165,8 +189,20 @@ function WechatAnalysisPage() {
       },
       { title: "业务类型", dataIndex: "business_type", width: 100, ellipsis: true },
       { title: "用途类型", dataIndex: "purpose_type", width: 90, ellipsis: true },
-      { title: "金额(元)", dataIndex: "amount_yuan", width: 110, render: formatAmount },
-      { title: "余额(元)", dataIndex: "balance_yuan", width: 110, render: formatAmount },
+      {
+        title: "金额(元)",
+        dataIndex: "amount_yuan",
+        width: 110,
+        sorter: (a: WechatAnalysisRecord, b: WechatAnalysisRecord) => Number(a.amount_yuan || 0) - Number(b.amount_yuan || 0),
+        render: (value: number) => <span className="analysis-table-amount">{formatAmount(value)}</span>,
+      },
+      {
+        title: "余额(元)",
+        dataIndex: "balance_yuan",
+        width: 110,
+        sorter: (a: WechatAnalysisRecord, b: WechatAnalysisRecord) => Number(a.balance_yuan || 0) - Number(b.balance_yuan || 0),
+        render: (value: number) => <span className="analysis-table-amount">{formatAmount(value)}</span>,
+      },
       { title: "对手", dataIndex: "counterparty_name", width: 140, ellipsis: true },
       { title: "对手银行", dataIndex: "counterparty_bank_name", width: 120, ellipsis: true },
       { title: "备注1", dataIndex: "remark1", width: 120, ellipsis: true },
@@ -176,8 +212,13 @@ function WechatAnalysisPage() {
     [records]
   );
 
+  const filteredRecords = useMemo(
+    () => (records?.records || []).filter((row) => recordMatchesKeyword(row, tableKeyword)),
+    [records, tableKeyword]
+  );
+
   const exportRecords = async () => {
-    if (!records?.records.length) {
+    if (!filteredRecords.length) {
       message.warning("当前没有可导出的明细");
       return;
     }
@@ -185,7 +226,7 @@ function WechatAnalysisPage() {
       const currentBatch = batches.find((item) => item.import_batch_id === batchId);
       const fileName = `${batchLabel(currentBatch || { import_batch_id: batchId })}_微信明细`;
       const blob = await api.exportRowsToExcel(
-        records.records as unknown as Record<string, unknown>[],
+        filteredRecords as unknown as Record<string, unknown>[],
         [
           { key: "txn_time", title: "交易时间" },
           { key: "user_name", title: "用户" },
@@ -320,13 +361,13 @@ function WechatAnalysisPage() {
         <div style={{ marginTop: 20 }}>
           <Row gutter={16}>
             <Col xs={24} md={8}>
-              <div className="metric-card"><div className="metric-title">收入合计(元)</div><div className="metric-value metric-primary">{formatAmount(records.summary.in_total)}</div></div>
+              <div className="metric-card analysis-kpi-tile"><div className="metric-title">收入合计(元)</div><div className="metric-value">{formatAmount(records.summary.in_total)}</div></div>
             </Col>
             <Col xs={24} md={8}>
-              <div className="metric-card"><div className="metric-title">支出合计(元)</div><div className="metric-value metric-secondary">{formatAmount(records.summary.out_total)}</div></div>
+              <div className="metric-card analysis-kpi-tile analysis-kpi-tile-alt"><div className="metric-title">支出合计(元)</div><div className="metric-value">{formatAmount(records.summary.out_total)}</div></div>
             </Col>
             <Col xs={24} md={8}>
-              <div className="metric-card"><div className="metric-title">净流入(元)</div><div className="metric-value">{formatAmount(records.summary.net_total)}</div></div>
+              <div className="metric-card analysis-kpi-tile analysis-kpi-tile-warm"><div className="metric-title">净流入(元)</div><div className="metric-value">{formatAmount(records.summary.net_total)}</div></div>
             </Col>
           </Row>
           <Row gutter={16} style={{ marginTop: 16 }}>
@@ -352,19 +393,30 @@ function WechatAnalysisPage() {
               </Col>
             )}
           </Row>
-          <div className="app-card" style={{ marginTop: 16 }}>
-            <div className="bank-section-head">
+          <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
+            <div className="bank-section-head analysis-table-toolbar">
               <Title level={5} style={{ margin: 0 }}>微信明细</Title>
-              <Button icon={<DownloadOutlined />} disabled={!records.records.length} onClick={() => void exportRecords()}>
-                导出Excel
-              </Button>
+              <Space wrap>
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索用户、对手、类型、备注"
+                  value={tableKeyword}
+                  onChange={(event) => setTableKeyword(event.target.value)}
+                  style={{ width: 260 }}
+                />
+                <Button icon={<DownloadOutlined />} disabled={!filteredRecords.length} onClick={() => void exportRecords()}>
+                  导出Excel
+                </Button>
+              </Space>
             </div>
             <Table
-              size="small"
+              className="analysis-data-table"
+              size="middle"
               rowKey={(row) => `${row.txn_no}-${row.txn_time}`}
               loading={loading}
               columns={recordColumns}
-              dataSource={records.records}
+              dataSource={filteredRecords}
               scroll={{ x: 1400 }}
               pagination={{ pageSize: 20, showSizeChanger: true }}
             />
