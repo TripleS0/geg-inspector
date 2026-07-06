@@ -26,6 +26,7 @@ class CommercialAnalysisFilters:
     winner: str = ""
     amount_min: float | None = None
     amount_max: float | None = None
+    participation_min: int | None = None
     only_winners: bool = False
     start_time: str = ""
     end_time: str = ""
@@ -55,10 +56,25 @@ class CommercialAnalysisService:
     ) -> dict[str, Any]:
         active = filters or CommercialAnalysisFilters()
         records = [r for r in self._load_records(commercial_batch_id) if self._match_filters(r, active)]
-        records = records[: max(1, min(int(limit), 10000))]
+
+        if active.participation_min is not None and int(active.participation_min) > 0:
+            min_count = int(active.participation_min)
+            pref_summary = self.summarize(records, commercial_batch_id)
+            allowed = {
+                c["company_norm"]
+                for c in pref_summary["company_summary"]
+                if int(c["participation_count"]) >= min_count
+            }
+            records = [
+                r
+                for r in records
+                if normalize_enterprise_name(self._to_text(r.get("company_name"))) in allowed
+            ]
+
         summary = self.summarize(records, commercial_batch_id)
+        records_out = records[: max(1, min(int(limit), 10000))]
         return {
-            "records": records,
+            "records": records_out,
             "summary": summary,
             "description": self.render_description(summary),
         }
@@ -390,15 +406,38 @@ class CommercialAnalysisService:
         if filters.amount_max is not None and amount > float(filters.amount_max):
             return False
         inquiry_time = self._parse_time(row.get("inquiry_time"))
-        if filters.start_time:
-            start = self._parse_time(filters.start_time)
-            if start and inquiry_time and inquiry_time < start:
+        if filters.start_time or filters.end_time:
+            if inquiry_time is None:
                 return False
-        if filters.end_time:
-            end = self._parse_time(filters.end_time)
-            if end and inquiry_time and inquiry_time > end:
-                return False
+            if filters.start_time:
+                start = self._parse_time(filters.start_time)
+                if start and inquiry_time < start:
+                    return False
+            if filters.end_time:
+                end = self._parse_time(filters.end_time)
+                if end and inquiry_time > end:
+                    return False
         return True
+
+    @staticmethod
+    def _parse_time(value: Any) -> datetime | None:
+        text = CommercialAnalysisService._to_text(value)
+        if not text:
+            return None
+        normalized = text.replace("/", "-").replace("T", " ")
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(normalized[:19])
+        except ValueError:
+            return None
 
     @staticmethod
     def _extract_inquiry_time(row: dict[str, str]) -> str:
@@ -410,24 +449,6 @@ class CommercialAnalysisService:
             if match:
                 return match.group(1).replace("/", "-")
         return ""
-
-    @staticmethod
-    def _parse_time(value: Any) -> datetime | None:
-        text = CommercialAnalysisService._to_text(value)
-        if not text:
-            return None
-        for fmt in (
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-            "%Y/%m/%d %H:%M:%S",
-            "%Y/%m/%d",
-        ):
-            try:
-                return datetime.strptime(text[: len(fmt.replace("%", "0"))], fmt)
-            except ValueError:
-                continue
-        return None
 
     @staticmethod
     def _fill_forward(rows: list[dict[str, str]]) -> list[dict[str, str]]:

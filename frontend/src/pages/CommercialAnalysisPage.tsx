@@ -84,6 +84,46 @@ function winRate(participation: number, wins: number) {
   return Math.round((wins / participation) * 1000) / 10;
 }
 
+type SortField = "participation_count" | "win_count" | "win_rate" | "win_amount" | "risk_score";
+
+const DEFAULT_SORT: { field: SortField; order: "ascend" | "descend" } = {
+  field: "win_amount",
+  order: "descend",
+};
+
+/** 降序 ↔ 升序循环，不出现取消排序（Ant Design 需 3 项，第三项与首项相同） */
+const SORT_DIRECTIONS: ("ascend" | "descend")[] = ["descend", "ascend", "descend"];
+
+function normalizeCompanyRow(row: Record<string, unknown>): CompanySummaryRow {
+  return {
+    company_name: String(row.company_name || ""),
+    company_norm: row.company_norm ? String(row.company_norm) : undefined,
+    participation_count: Number(row.participation_count) || 0,
+    win_count: Number(row.win_count) || 0,
+    win_amount: Number(row.win_amount) || 0,
+    risk_level: String(row.risk_level || ""),
+    risk_score: Number(row.risk_score) || 0,
+    risk_hit_count: Number(row.risk_hit_count) || 0,
+  };
+}
+
+function compareCompanyRows(a: CompanySummaryRow, b: CompanySummaryRow, field: SortField): number {
+  switch (field) {
+    case "participation_count":
+      return a.participation_count - b.participation_count;
+    case "win_count":
+      return a.win_count - b.win_count;
+    case "win_rate":
+      return winRate(a.participation_count, a.win_count) - winRate(b.participation_count, b.win_count);
+    case "win_amount":
+      return a.win_amount - b.win_amount;
+    case "risk_score":
+      return a.risk_score - b.risk_score;
+    default:
+      return 0;
+  }
+}
+
 function CommercialAnalysisPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [batches, setBatches] = useState<BatchInfo[]>([]);
@@ -95,6 +135,13 @@ function CommercialAnalysisPage() {
   const [exporting, setExporting] = useState(false);
   const [companySearch, setCompanySearch] = useState("");
   const [riskLevelFilter, setRiskLevelFilter] = useState<string | undefined>();
+  const [sortState, setSortState] = useState(DEFAULT_SORT);
+  const [tablePage, setTablePage] = useState(1);
+  const [tablePageSize, setTablePageSize] = useState(20);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [companySearch, riskLevelFilter]);
 
   useEffect(() => {
     void (async () => {
@@ -115,6 +162,8 @@ function CommercialAnalysisPage() {
     setSearchParams({ batch: batchId });
     setCompanySearch("");
     setRiskLevelFilter(undefined);
+    setSortState(DEFAULT_SORT);
+    setTablePage(1);
     void api.commercialAnalysisFilterOptions(batchId).then(setFilterOptions).catch(() => setFilterOptions({}));
     void runQuery();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,7 +203,7 @@ function CommercialAnalysisPage() {
   };
 
   const companySummary = useMemo(
-    () => (records?.summary.company_summary || []) as unknown as CompanySummaryRow[],
+    () => (records?.summary.company_summary || []).map((row) => normalizeCompanyRow(row as Record<string, unknown>)),
     [records]
   );
 
@@ -173,6 +222,122 @@ function CommercialAnalysisPage() {
       return true;
     });
   }, [companySummary, companySearch, riskLevelFilter]);
+
+  const sortedCompanySummary = useMemo(() => {
+    const rows = [...filteredCompanySummary];
+    const dir = sortState.order === "ascend" ? 1 : -1;
+    rows.sort((a, b) => {
+      const cmp = compareCompanyRows(a, b, sortState.field);
+      if (cmp !== 0) return dir * cmp;
+      return a.company_name.localeCompare(b.company_name, "zh-CN");
+    });
+    return rows;
+  }, [filteredCompanySummary, sortState]);
+
+  const companyColumns = useMemo<TableColumnsType<CompanySummaryRow>>(
+    () => [
+      {
+        title: "排名",
+        width: 64,
+        align: "center",
+        render: (_v, _r, index) => (
+          <span className="commercial-rank">{(tablePage - 1) * tablePageSize + index + 1}</span>
+        ),
+      },
+      {
+        title: "企业",
+        dataIndex: "company_name",
+        ellipsis: true,
+        render: (name: string) => <Text strong>{name}</Text>,
+      },
+      {
+        title: "参标次数",
+        key: "participation_count",
+        dataIndex: "participation_count",
+        width: 108,
+        align: "right",
+        sorter: true,
+        sortDirections: SORT_DIRECTIONS,
+        sortOrder: sortState.field === "participation_count" ? sortState.order : null,
+      },
+      {
+        title: "中标次数",
+        key: "win_count",
+        dataIndex: "win_count",
+        width: 108,
+        align: "right",
+        sorter: true,
+        sortDirections: SORT_DIRECTIONS,
+        sortOrder: sortState.field === "win_count" ? sortState.order : null,
+        render: (v: number) => <span className={v > 0 ? "commercial-win-count" : ""}>{v}</span>,
+      },
+      {
+        title: "中标率",
+        key: "win_rate",
+        width: 120,
+        align: "center",
+        sorter: true,
+        sortDirections: SORT_DIRECTIONS,
+        sortOrder: sortState.field === "win_rate" ? sortState.order : null,
+        render: (_v, row) => {
+          const rate = winRate(row.participation_count, row.win_count);
+          return (
+            <div className="commercial-win-rate">
+              <Progress
+                percent={rate}
+                size="small"
+                showInfo={false}
+                strokeColor={rate >= 50 ? "#d94832" : rate >= 20 ? "#e8954a" : "#c9a227"}
+              />
+              <span>{rate}%</span>
+            </div>
+          );
+        },
+      },
+      {
+        title: "中标金额",
+        key: "win_amount",
+        dataIndex: "win_amount",
+        width: 140,
+        align: "right",
+        sorter: true,
+        sortDirections: SORT_DIRECTIONS,
+        sortOrder: sortState.field === "win_amount" ? sortState.order : null,
+        render: (v: number) => <Text className="commercial-amount">{formatAmount(v)}</Text>,
+      },
+      {
+        title: "风险等级",
+        dataIndex: "risk_level",
+        width: 96,
+        align: "center",
+        filters: [
+          { text: "高", value: "high" },
+          { text: "中", value: "medium" },
+          { text: "低", value: "low" },
+          { text: "未分级", value: "" },
+        ],
+        onFilter: (value, record) => (record.risk_level || "") === value,
+        render: (v: string) =>
+          v ? (
+            <Tag color={RISK_LEVEL_COLORS[v] || "default"}>{riskLevelLabel(v)}</Tag>
+          ) : (
+            <Tag>未分级</Tag>
+          ),
+      },
+      {
+        title: "风险分",
+        key: "risk_score",
+        dataIndex: "risk_score",
+        width: 88,
+        align: "right",
+        sorter: true,
+        sortDirections: SORT_DIRECTIONS,
+        sortOrder: sortState.field === "risk_score" ? sortState.order : null,
+        render: (v: number) => (v ? <Text type={v >= 60 ? "danger" : undefined}>{v}</Text> : "-"),
+      },
+    ],
+    [sortState, tablePage, tablePageSize]
+  );
 
   const companyAmountOption = useMemo(() => {
     const top = records?.summary.top_company_amounts || [];
@@ -236,95 +401,31 @@ function CommercialAnalysisPage() {
     };
   }, [records]);
 
-  const companyColumns = useMemo<TableColumnsType<CompanySummaryRow>>(
-    () => [
-      {
-        title: "排名",
-        width: 64,
-        align: "center",
-        render: (_v, _r, index) => <span className="commercial-rank">{index + 1}</span>,
-      },
-      {
-        title: "企业",
-        dataIndex: "company_name",
-        ellipsis: true,
-        render: (name: string) => <Text strong>{name}</Text>,
-      },
-      {
-        title: "参标次数",
-        dataIndex: "participation_count",
-        width: 108,
-        align: "right",
-        sorter: (a, b) => a.participation_count - b.participation_count,
-        defaultSortOrder: undefined,
-      },
-      {
-        title: "中标次数",
-        dataIndex: "win_count",
-        width: 108,
-        align: "right",
-        sorter: (a, b) => a.win_count - b.win_count,
-        render: (v: number) => <span className={v > 0 ? "commercial-win-count" : ""}>{v}</span>,
-      },
-      {
-        title: "中标率",
-        width: 120,
-        align: "center",
-        sorter: (a, b) => winRate(a.participation_count, a.win_count) - winRate(b.participation_count, b.win_count),
-        render: (_v, row) => {
-          const rate = winRate(row.participation_count, row.win_count);
-          return (
-            <div className="commercial-win-rate">
-              <Progress
-                percent={rate}
-                size="small"
-                showInfo={false}
-                strokeColor={rate >= 50 ? "#d94832" : rate >= 20 ? "#e8954a" : "#c9a227"}
-              />
-              <span>{rate}%</span>
-            </div>
-          );
-        },
-      },
-      {
-        title: "中标金额",
-        dataIndex: "win_amount",
-        width: 140,
-        align: "right",
-        sorter: (a, b) => a.win_amount - b.win_amount,
-        defaultSortOrder: "descend",
-        render: (v: number) => <Text className="commercial-amount">{formatAmount(v)}</Text>,
-      },
-      {
-        title: "风险等级",
-        dataIndex: "risk_level",
-        width: 96,
-        align: "center",
-        filters: [
-          { text: "高", value: "high" },
-          { text: "中", value: "medium" },
-          { text: "低", value: "low" },
-          { text: "未分级", value: "" },
-        ],
-        onFilter: (value, record) => (record.risk_level || "") === value,
-        render: (v: string) =>
-          v ? (
-            <Tag color={RISK_LEVEL_COLORS[v] || "default"}>{riskLevelLabel(v)}</Tag>
-          ) : (
-            <Tag>未分级</Tag>
-          ),
-      },
-      {
-        title: "风险分",
-        dataIndex: "risk_score",
-        width: 88,
-        align: "right",
-        sorter: (a, b) => Number(a.risk_score || 0) - Number(b.risk_score || 0),
-        render: (v: number) => (v ? <Text type={v >= 60 ? "danger" : undefined}>{v}</Text> : "-"),
-      },
-    ],
-    []
-  );
+  const handleTableChange = (
+    pagination: { current?: number; pageSize?: number },
+    _filters: unknown,
+    sorter: unknown
+  ) => {
+    if (pagination.current) setTablePage(pagination.current);
+    if (pagination.pageSize) setTablePageSize(pagination.pageSize);
+    const item = (Array.isArray(sorter) ? sorter[0] : sorter) as {
+      columnKey?: SortField;
+      field?: SortField;
+      order?: "ascend" | "descend" | null;
+    };
+    const field = (item?.columnKey || item?.field) as SortField | undefined;
+    if (!field) return;
+    setSortState((prev) => {
+      const order: "ascend" | "descend" =
+        item?.order === "ascend" || item?.order === "descend"
+          ? item.order
+          : prev.field === field && prev.order === "descend"
+            ? "ascend"
+            : "descend";
+      return { field, order };
+    });
+    setTablePage(1);
+  };
 
   return (
     <Card className="app-card commercial-analysis-page" bordered={false}>
@@ -389,6 +490,11 @@ function CommercialAnalysisPage() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8} lg={6}>
+              <Form.Item name="participation_min" label="参标次数下限">
+                <InputNumber min={1} precision={0} style={{ width: "100%" }} placeholder="不限" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8} lg={6}>
               <Form.Item name="amount_min" label="中标金额下限">
                 <InputNumber min={0} style={{ width: "100%" }} placeholder="不限" />
               </Form.Item>
@@ -421,6 +527,8 @@ function CommercialAnalysisPage() {
                 filter.resetFields();
                 setCompanySearch("");
                 setRiskLevelFilter(undefined);
+                setSortState(DEFAULT_SORT);
+                setTablePage(1);
               }}
             >
               重置
@@ -515,9 +623,13 @@ function CommercialAnalysisPage() {
               loading={loading}
               scroll={{ x: "max-content" }}
               columns={companyColumns}
-              dataSource={filteredCompanySummary}
+              dataSource={sortedCompanySummary}
+              sortDirections={SORT_DIRECTIONS}
+              showSorterTooltip
+              onChange={handleTableChange}
               pagination={{
-                pageSize: 20,
+                current: tablePage,
+                pageSize: tablePageSize,
                 showSizeChanger: true,
                 pageSizeOptions: ["10", "20", "50", "100"],
                 showTotal: (total) => `共 ${total} 条`,

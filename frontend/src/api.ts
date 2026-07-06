@@ -153,6 +153,7 @@ export interface CommercialAnalysisFilter {
   winner?: string;
   amount_min?: number | null;
   amount_max?: number | null;
+  participation_min?: number | null;
   only_winners?: boolean;
   start_time?: string;
   end_time?: string;
