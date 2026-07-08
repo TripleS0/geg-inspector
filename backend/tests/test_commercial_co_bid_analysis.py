@@ -105,6 +105,23 @@ class CommercialCoBidAnalysisTests(unittest.TestCase):
         self.assertIn("请指定", result["description"])
 
 
+    def test_shared_inquiry_nos_not_truncated(self) -> None:
+        rows = []
+        for idx in range(1, 61):
+            rows.append(_record(f"Q{idx:03d}", "目标公司甲", is_winner=False, inquiry_time=f"2024-01-{idx % 28 + 1:02d}"))
+            rows.append(_record(f"Q{idx:03d}", "陪标公司乙", is_winner=True, inquiry_time=f"2024-01-{idx % 28 + 1:02d}"))
+        with patch(
+            "app.services.integration.commercial.co_bid_analysis_service.CommercialAnalysisService._load_records",
+            return_value=rows,
+        ):
+            result = self.service.analyze(
+                "batch-1",
+                CoBidAnalysisParams(company_name="目标公司甲"),
+            )
+        partner = next(c for c in result["companions"] if c["company_name"] == "陪标公司乙")
+        self.assertEqual(partner["shared_inquiries"], 60)
+        self.assertEqual(len(partner["shared_inquiry_nos"]), 60)
+
     def test_fuzzy_company_name_match(self) -> None:
         rows = [
             _record("Q1", "珠海某某机电设备有限公司", is_winner=False),

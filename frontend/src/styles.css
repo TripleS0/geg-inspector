@@ -3221,6 +3221,10 @@ html, body, #root {
   border-radius: 12px;
 }
 
+.commercial-co-bid-drawer-filters {
+  margin-bottom: 12px;
+}
+
 .commercial-co-bid-legend {
   display: flex;
   flex-wrap: wrap;

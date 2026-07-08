@@ -7,6 +7,7 @@ import {
   DatePicker,
   Drawer,
   Form,
+  Input,
   InputNumber,
   Progress,
   Row,
@@ -20,6 +21,7 @@ import {
   Typography,
   message,
 } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
 import type { TableColumnsType } from "antd";
 import { QuestionCircleOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
@@ -95,21 +97,28 @@ function PatternHelpTag({ pattern }: { pattern: string }) {
   );
 }
 
-type SharedWinOutcome = "target" | "partner" | "other" | "none";
+type SharedWinOutcome = "target" | "partner" | "both" | "other" | "none";
+
+function partnerWonInquiry(inquiry: CommercialCoBidInquiry, partnerCompany: string): boolean {
+  return inquiry.winners.some((w) => w === partnerCompany || w.includes(partnerCompany));
+}
 
 function classifySharedOutcome(
   inquiry: CommercialCoBidInquiry,
   partnerCompany: string,
 ): SharedWinOutcome {
-  if (inquiry.target_won) return "target";
-  if (inquiry.winners.some((w) => w === partnerCompany || w.includes(partnerCompany))) return "partner";
   if (!inquiry.winners.length) return "none";
+  const partnerWin = partnerWonInquiry(inquiry, partnerCompany);
+  if (inquiry.target_won && partnerWin) return "both";
+  if (inquiry.target_won) return "target";
+  if (partnerWin) return "partner";
   return "other";
 }
 
 const OUTCOME_LABELS: Record<SharedWinOutcome, string> = {
   target: "目标中标",
   partner: "对方中标",
+  both: "共同中标",
   other: "第三方中标",
   none: "无中标/流标",
 };
@@ -117,9 +126,74 @@ const OUTCOME_LABELS: Record<SharedWinOutcome, string> = {
 const OUTCOME_COLORS: Record<SharedWinOutcome, string> = {
   target: chartPalette[1],
   partner: chartPalette[4],
+  both: chartPalette[2],
   other: chartPalette[6],
   none: "#c9cdd4",
 };
+
+const OUTCOME_TAG_COLORS: Record<SharedWinOutcome, string> = {
+  target: "green",
+  partner: "orange",
+  both: "purple",
+  other: "default",
+  none: "default",
+};
+
+const OUTCOME_ORDER: SharedWinOutcome[] = ["target", "partner", "both", "other", "none"];
+
+interface CoBidDrawerInquiryFilters {
+  inquiryNo: string;
+  winnerKeyword: string;
+  outcome?: SharedWinOutcome;
+  dateRange: [Dayjs, Dayjs] | null;
+}
+
+const EMPTY_CO_BID_DRAWER_FILTERS: CoBidDrawerInquiryFilters = {
+  inquiryNo: "",
+  winnerKeyword: "",
+  outcome: undefined,
+  dateRange: null,
+};
+
+function countCompanionBothWins(
+  companion: CommercialCoBidCompanion,
+  inquiries: CommercialCoBidInquiry[],
+): number {
+  const keys = new Set(companion.shared_inquiry_nos);
+  let count = 0;
+  for (const inquiry of inquiries) {
+    if (!keys.has(inquiry.inquiry_no)) continue;
+    if (classifySharedOutcome(inquiry, companion.company_name) === "both") count += 1;
+  }
+  return count;
+}
+
+function matchCoBidInquiryFilters(
+  inquiry: CommercialCoBidInquiry,
+  partnerCompany: string,
+  filters: CoBidDrawerInquiryFilters,
+): boolean {
+  if (filters.inquiryNo.trim()) {
+    const keyword = filters.inquiryNo.trim().toLowerCase();
+    if (!inquiry.inquiry_no.toLowerCase().includes(keyword)) return false;
+  }
+  if (filters.winnerKeyword.trim()) {
+    const keyword = filters.winnerKeyword.trim().toLowerCase();
+    if (!inquiry.winners.some((winner) => winner.toLowerCase().includes(keyword))) return false;
+  }
+  if (filters.outcome) {
+    if (classifySharedOutcome(inquiry, partnerCompany) !== filters.outcome) return false;
+  }
+  if (filters.dateRange?.[0] && filters.dateRange?.[1]) {
+    const raw = inquiry.inquiry_time?.trim();
+    if (!raw) return false;
+    const parsed = dayjs(raw);
+    if (!parsed.isValid()) return false;
+    if (parsed.isBefore(filters.dateRange[0].startOf("day"))) return false;
+    if (parsed.isAfter(filters.dateRange[1].endOf("day"))) return false;
+  }
+  return true;
+}
 
 function riskLevelLabel(level: string) {
   return RISK_LEVEL_LABELS[level] || level || "未分级";
@@ -208,6 +282,9 @@ function CommercialAnalysisPage() {
   const [coBidDrawerCompanion, setCoBidDrawerCompanion] = useState<CommercialCoBidCompanion | null>(null);
   const [coBidDrawerPage, setCoBidDrawerPage] = useState(1);
   const [coBidDrawerPageSize, setCoBidDrawerPageSize] = useState(10);
+  const [coBidDrawerFilters, setCoBidDrawerFilters] = useState<CoBidDrawerInquiryFilters>(
+    EMPTY_CO_BID_DRAWER_FILTERS,
+  );
   const [coBidCompanionPage, setCoBidCompanionPage] = useState(1);
   const [coBidCompanionPageSize, setCoBidCompanionPageSize] = useState(10);
   const coBidChartRef = useRef<React.ComponentRef<typeof ReactECharts>>(null);
@@ -398,6 +475,7 @@ function CommercialAnalysisPage() {
     (companion: CommercialCoBidCompanion) => {
       setCoBidDrawerCompanion(companion);
       setCoBidDrawerPage(1);
+      setCoBidDrawerFilters(EMPTY_CO_BID_DRAWER_FILTERS);
       setCoBidDrawerOpen(true);
     },
     [],
@@ -433,8 +511,43 @@ function CommercialAnalysisPage() {
   const coBidSharedInquiries = useMemo(() => {
     if (!coBidResult || !coBidDrawerCompanion) return [] as CommercialCoBidInquiry[];
     const keys = new Set(coBidDrawerCompanion.shared_inquiry_nos);
-    return coBidResult.inquiries.filter((row) => keys.has(row.inquiry_no));
+    const partnerName = coBidDrawerCompanion.company_name;
+    const fromKeys = coBidResult.inquiries.filter((row) => keys.has(row.inquiry_no));
+    if (fromKeys.length >= coBidDrawerCompanion.shared_inquiries) {
+      return fromKeys;
+    }
+    return coBidResult.inquiries.filter((row) =>
+      row.participants.some((name) => name === partnerName || name.includes(partnerName)),
+    );
   }, [coBidResult, coBidDrawerCompanion]);
+
+  const coBidFilteredInquiries = useMemo(() => {
+    if (!coBidDrawerCompanion) return coBidSharedInquiries;
+    return coBidSharedInquiries.filter((row) =>
+      matchCoBidInquiryFilters(row, coBidDrawerCompanion.company_name, coBidDrawerFilters),
+    );
+  }, [coBidSharedInquiries, coBidDrawerCompanion, coBidDrawerFilters]);
+
+  const coBidOutcomeCounts = useMemo(() => {
+    const counts: Record<SharedWinOutcome, number> = {
+      target: 0,
+      partner: 0,
+      both: 0,
+      other: 0,
+      none: 0,
+    };
+    if (!coBidDrawerCompanion) return counts;
+    const partnerName = coBidDrawerCompanion.company_name;
+    for (const inquiry of coBidSharedInquiries) {
+      counts[classifySharedOutcome(inquiry, partnerName)] += 1;
+    }
+    return counts;
+  }, [coBidSharedInquiries, coBidDrawerCompanion]);
+
+  const updateCoBidDrawerFilters = useCallback((patch: Partial<CoBidDrawerInquiryFilters>) => {
+    setCoBidDrawerFilters((prev) => ({ ...prev, ...patch }));
+    setCoBidDrawerPage(1);
+  }, []);
 
   const coBidDrawerCharts = useMemo(() => {
     if (!coBidDrawerCompanion || !coBidResult) {
@@ -444,14 +557,15 @@ function CommercialAnalysisPage() {
     const outcomes: Record<SharedWinOutcome, number> = {
       target: 0,
       partner: 0,
+      both: 0,
       other: 0,
       none: 0,
     };
-    for (const inquiry of coBidSharedInquiries) {
+    for (const inquiry of coBidFilteredInquiries) {
       outcomes[classifySharedOutcome(inquiry, partnerName)] += 1;
     }
     const pieOption = {
-      color: Object.values(OUTCOME_COLORS),
+      color: OUTCOME_ORDER.map((key) => OUTCOME_COLORS[key]),
       tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
       legend: { bottom: 0, type: "scroll" },
       series: [
@@ -459,35 +573,40 @@ function CommercialAnalysisPage() {
           type: "pie",
           radius: ["42%", "68%"],
           center: ["50%", "44%"],
-          data: (Object.keys(outcomes) as SharedWinOutcome[])
-            .filter((key) => outcomes[key] > 0)
-            .map((key) => ({ name: OUTCOME_LABELS[key], value: outcomes[key] })),
+          data: OUTCOME_ORDER.filter((key) => outcomes[key] > 0).map((key) => ({
+            name: OUTCOME_LABELS[key],
+            value: outcomes[key],
+          })),
           label: { formatter: "{b}\n{d}%" },
         },
       ],
     };
     const compareOption = {
-      color: [chartPalette[1], chartPalette[4], chartPalette[6]],
+      color: OUTCOME_ORDER.map((key) => OUTCOME_COLORS[key]),
       tooltip: { trigger: "axis" },
-      grid: { left: 12, right: 12, top: 24, bottom: 28, containLabel: true },
-      xAxis: { type: "category", data: ["目标中标", "对方中标", "双方未中", "第三方中标"] },
+      grid: { left: 12, right: 12, top: 24, bottom: 56, containLabel: true },
+      xAxis: {
+        type: "category",
+        data: OUTCOME_ORDER.map((key) => OUTCOME_LABELS[key]),
+        axisLabel: {
+          interval: 0,
+          rotate: 28,
+          fontSize: 11,
+          hideOverlap: false,
+        },
+      },
       yAxis: { type: "value", minInterval: 1 },
       series: [
         {
           type: "bar",
           barMaxWidth: 48,
-          data: [
-            coBidDrawerCompanion.target_wins_together,
-            coBidDrawerCompanion.partner_wins_together,
-            coBidDrawerCompanion.both_lose_together,
-            coBidDrawerCompanion.other_wins_together,
-          ],
+          data: OUTCOME_ORDER.map((key) => outcomes[key]),
           itemStyle: { borderRadius: [6, 6, 0, 0] },
         },
       ],
     };
     return { pieOption, compareOption };
-  }, [coBidDrawerCompanion, coBidResult, coBidSharedInquiries]);
+  }, [coBidDrawerCompanion, coBidResult, coBidFilteredInquiries]);
 
   const coBidDrawerInquiryColumns = useMemo<TableColumnsType<CommercialCoBidInquiry>>(
     () => [
@@ -508,7 +627,7 @@ function CommercialAnalysisPage() {
         render: (_v, row) => {
           if (!coBidDrawerCompanion) return "-";
           const outcome = classifySharedOutcome(row, coBidDrawerCompanion.company_name);
-          return <Tag color={outcome === "target" ? "green" : outcome === "partner" ? "orange" : "default"}>{OUTCOME_LABELS[outcome]}</Tag>;
+          return <Tag color={OUTCOME_TAG_COLORS[outcome]}>{OUTCOME_LABELS[outcome]}</Tag>;
         },
       },
     ],
@@ -561,6 +680,15 @@ function CommercialAnalysisPage() {
     [coBidResult],
   );
 
+  const coBidCompanionBothWins = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!coBidResult) return map;
+    for (const companion of coBidResult.companions) {
+      map.set(companion.company_norm, countCompanionBothWins(companion, coBidResult.inquiries));
+    }
+    return map;
+  }, [coBidResult]);
+
   const coBidCompanionColumns = useMemo<TableColumnsType<CommercialCoBidCompanion>>(
     () => [
       {
@@ -598,6 +726,15 @@ function CommercialAnalysisPage() {
         align: "right",
       },
       {
+        title: "共同中标",
+        key: "both_wins_together",
+        width: 88,
+        align: "right",
+        sorter: (a, b) =>
+          (coBidCompanionBothWins.get(a.company_norm) || 0) - (coBidCompanionBothWins.get(b.company_norm) || 0),
+        render: (_v, row) => coBidCompanionBothWins.get(row.company_norm) || 0,
+      },
+      {
         title: "双方未中",
         dataIndex: "both_lose_together",
         width: 88,
@@ -619,7 +756,7 @@ function CommercialAnalysisPage() {
           ),
       },
     ],
-    [],
+    [coBidCompanionBothWins],
   );
 
   const detailColumns = useMemo<TableColumnsType<CommercialAnalysisRecord>>(
@@ -1273,11 +1410,15 @@ function CommercialAnalysisPage() {
               </div>
               <div className="commercial-co-bid-drawer-stat">
                 <span className="label">目标中标</span>
-                <span className="value">{coBidDrawerCompanion.target_wins_together}</span>
+                <span className="value">{coBidOutcomeCounts.target}</span>
               </div>
               <div className="commercial-co-bid-drawer-stat">
                 <span className="label">对方中标</span>
-                <span className="value">{coBidDrawerCompanion.partner_wins_together}</span>
+                <span className="value">{coBidOutcomeCounts.partner}</span>
+              </div>
+              <div className="commercial-co-bid-drawer-stat">
+                <span className="label">共同中标</span>
+                <span className="value">{coBidOutcomeCounts.both}</span>
               </div>
               <div className="commercial-co-bid-drawer-stat">
                 <span className="label">同场占比进度</span>
@@ -1318,12 +1459,63 @@ function CommercialAnalysisPage() {
               </Col>
             </Row>
 
-            <Card size="small" className="commercial-co-bid-drawer-table" title={`同场项目明细（${coBidSharedInquiries.length} 项）`}>
+            <Card
+              size="small"
+              className="commercial-co-bid-drawer-table"
+              title={`同场项目明细（${coBidFilteredInquiries.length}${coBidFilteredInquiries.length !== coBidSharedInquiries.length ? ` / ${coBidSharedInquiries.length}` : ""} 项）`}
+            >
+              <div className="commercial-co-bid-drawer-filters">
+                <Row gutter={[8, 8]}>
+                  <Col xs={24} sm={12} md={6}>
+                    <Input
+                      allowClear
+                      placeholder="询价单号"
+                      value={coBidDrawerFilters.inquiryNo}
+                      onChange={(e) => updateCoBidDrawerFilters({ inquiryNo: e.target.value })}
+                    />
+                  </Col>
+                  <Col xs={24} sm={12} md={8}>
+                    <RangePicker
+                      allowClear
+                      style={{ width: "100%" }}
+                      format="YYYY-MM-DD"
+                      placeholder={["开始日期", "结束日期"]}
+                      value={coBidDrawerFilters.dateRange}
+                      onChange={(range) =>
+                        updateCoBidDrawerFilters({
+                          dateRange: range?.[0] && range?.[1] ? [range[0], range[1]] : null,
+                        })
+                      }
+                    />
+                  </Col>
+                  <Col xs={24} sm={12} md={5}>
+                    <Input
+                      allowClear
+                      placeholder="中标方（模糊）"
+                      value={coBidDrawerFilters.winnerKeyword}
+                      onChange={(e) => updateCoBidDrawerFilters({ winnerKeyword: e.target.value })}
+                    />
+                  </Col>
+                  <Col xs={24} sm={12} md={5}>
+                    <Select
+                      allowClear
+                      style={{ width: "100%" }}
+                      placeholder="同场结果"
+                      value={coBidDrawerFilters.outcome}
+                      options={OUTCOME_ORDER.map((key) => ({
+                        value: key,
+                        label: OUTCOME_LABELS[key],
+                      }))}
+                      onChange={(value) => updateCoBidDrawerFilters({ outcome: value })}
+                    />
+                  </Col>
+                </Row>
+              </div>
               <Table<CommercialCoBidInquiry>
                 rowKey="inquiry_no"
                 size="small"
                 columns={coBidDrawerInquiryColumns}
-                dataSource={coBidSharedInquiries}
+                dataSource={coBidFilteredInquiries}
                 scroll={{ x: "max-content" }}
                 pagination={{
                   current: coBidDrawerPage,

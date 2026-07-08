@@ -353,7 +353,7 @@ class CommercialCoBidAnalysisService:
                     "both_lose_rate_together": both_lose_rate,
                     "patterns": patterns,
                     "pattern_detail": pattern_detail,
-                    "shared_inquiry_nos": stat["shared_inquiry_nos"][:50],
+                    "shared_inquiry_nos": stat["shared_inquiry_nos"],
                 }
             )
 
