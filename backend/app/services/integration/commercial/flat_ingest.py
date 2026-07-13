@@ -165,6 +165,17 @@ def _format_source_ref(source_file: str, source_sheet: str, excel_row: int) -> s
     return f"{' / '.join(parts)} / 第{excel_row}行"
 
 
+def _compose_remark(*, handler: str = "", bid_code: str = "", supplier_code: str = "") -> str:
+    parts: list[str] = []
+    if handler:
+        parts.append(f"经办人:{handler}")
+    if bid_code:
+        parts.append(f"投标编码:{bid_code}")
+    if supplier_code:
+        parts.append(f"供应商编码:{supplier_code}")
+    return "; ".join(parts)
+
+
 def _empty_record(output_columns: list[str]) -> dict[str, str]:
     return {column: "" for column in output_columns}
 
@@ -198,6 +209,48 @@ def _build_winner_by_inquiry(body: pd.DataFrame, inquiry_col: str, winner_col: s
         if not current or (not _looks_like_company_name(current) and _looks_like_company_name(winner)):
             winner_map[inquiry_no] = winner
     return winner_map
+
+
+def _split_party_names(text: str) -> list[str]:
+    raw = _to_text(text)
+    if not raw:
+        return []
+    parts = re.split(r"[\r\n、,，;；/／|｜]+", raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        name = part.strip()
+        if not name or not _looks_like_company_name(name):
+            continue
+        key = re.sub(r"\s+", "", name).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _company_matches_winner(company: str, winner_text: str) -> bool:
+    company_name = _to_text(company)
+    winner = _to_text(winner_text)
+    if not company_name or not winner:
+        return False
+    if company_name == winner:
+        return True
+    return company_name in _split_party_names(winner)
+
+
+def _build_inquiry_max_win_price(body: pd.DataFrame, inquiry_col: str, win_price_col: str | None) -> dict[str, float]:
+    if not win_price_col:
+        return {}
+    max_by_inquiry: dict[str, float] = {}
+    for _, row in body.iterrows():
+        inquiry_no = _cell(row, inquiry_col)
+        if not inquiry_no:
+            continue
+        price = _to_amount(_cell(row, win_price_col))
+        max_by_inquiry[inquiry_no] = max(max_by_inquiry.get(inquiry_no, 0.0), price)
+    return max_by_inquiry
 
 
 def parse_old_commercial_sheet(
@@ -306,6 +359,7 @@ def parse_new_commercial_sheet(
     body = pd.DataFrame(realigned_rows, columns=headers)
 
     winner_by_inquiry = _build_winner_by_inquiry(body, inquiry_col, winner_col)
+    inquiry_max_win_price = _build_inquiry_max_win_price(body, inquiry_col, win_price_col)
     records: list[dict[str, str]] = []
 
     for excel_row, (_, row) in enumerate(body.iterrows(), start=2):
@@ -314,15 +368,24 @@ def parse_new_commercial_sheet(
         if not inquiry_no or not _looks_like_company_name(company_name):
             continue
 
-        winner = winner_by_inquiry.get(inquiry_no, "")
+        inquiry_has_win_price = inquiry_max_win_price.get(inquiry_no, 0.0) > 0
+        winner = winner_by_inquiry.get(inquiry_no, "") if inquiry_has_win_price else ""
         if winner and not _looks_like_company_name(winner):
             winner = ""
         status = _cell(row, status_col) if status_col else ""
         quote_amount = _to_amount(_cell(row, quote_col))
         quote_text = _format_amount(quote_amount) if quote_amount > 0 else _cell(row, quote_col)
         title = _cell(row, title_col)
-        won = is_win_status(status) or (bool(winner) and company_name == winner)
-        display_status = status if status else ("已中标" if won else "未中标")
+        if inquiry_has_win_price:
+            won = is_win_status(status) or _company_matches_winner(company_name, winner)
+        else:
+            won = False
+        if status and inquiry_has_win_price:
+            display_status = status
+        elif won:
+            display_status = "已中标"
+        else:
+            display_status = "未中标"
 
         record = _empty_record(output_columns)
         record.update(
@@ -349,22 +412,38 @@ def parse_new_commercial_sheet(
             }
         )
         if won:
-            win_amount = quote_amount if quote_amount > 0 else _to_amount(_cell(row, win_price_col))
-            record["中标金额(元)"] = _format_amount(win_amount)
+            win_amount = _to_amount(_cell(row, win_price_col))
+            if win_amount > 0:
+                record["中标金额(元)"] = _format_amount(win_amount)
         records.append(record)
 
     return records
 
 
-def _compose_remark(*, handler: str = "", bid_code: str = "", supplier_code: str = "") -> str:
-    parts: list[str] = []
-    if handler:
-        parts.append(f"经办人:{handler}")
-    if bid_code:
-        parts.append(f"投标编码:{bid_code}")
-    if supplier_code:
-        parts.append(f"供应商编码:{supplier_code}")
-    return "; ".join(parts)
+_RAW_TABLE_PREFIX = re.compile(r"^raw_", re.IGNORECASE)
+_UPLOAD_UUID_PREFIX = re.compile(
+    r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_",
+    re.IGNORECASE,
+)
+_HEX_PREFIX = re.compile(r"^[0-9a-f]{8,64}_", re.IGNORECASE)
+
+
+def normalize_purchaser_label(name: str) -> str:
+    """Strip upload UUID / raw-table prefixes so charts show readable plant names."""
+    text = _to_text(name)
+    if not text:
+        return ""
+    text = _RAW_TABLE_PREFIX.sub("", text)
+    while True:
+        cleaned = _UPLOAD_UUID_PREFIX.sub("", text, count=1)
+        if cleaned == text:
+            break
+        text = cleaned
+    if _HEX_PREFIX.match(text):
+        suffix = _HEX_PREFIX.sub("", text, count=1).strip()
+        if suffix and not re.fullmatch(r"[0-9a-f]+", suffix, re.IGNORECASE):
+            text = suffix
+    return text.strip()
 
 
 __all__ = [
@@ -372,6 +451,7 @@ __all__ = [
     "detect_flat_format",
     "is_win_status",
     "normalize_header",
+    "normalize_purchaser_label",
     "parse_new_commercial_sheet",
     "parse_old_commercial_sheet",
 ]

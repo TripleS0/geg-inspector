@@ -224,7 +224,7 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
           <div className="fusion-wizard-body fusion-wizard-body-step2">
             <Title level={3} className="fusion-wizard-title">请导入数据</Title>
             <Paragraph type="secondary" className="fusion-wizard-desc">
-              选择数据来源并上传文件，可多次添加不同批次。完成后点击「开始导入」。
+              选择数据来源并上传文件，可多次添加不同批次。商务网请将多个发电厂/采购单位文件放在同一批中一并导入，完成后点击「开始导入」。
             </Paragraph>
 
             {phase === "importing" ? (

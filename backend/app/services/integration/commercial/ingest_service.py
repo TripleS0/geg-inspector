@@ -12,6 +12,7 @@ import pandas as pd
 from app.services.integration.bank.ingest_service import BankIngestService, IngestResult
 from app.services.integration.commercial.flat_ingest import (
     detect_flat_format,
+    normalize_purchaser_label,
     parse_new_commercial_sheet,
     parse_old_commercial_sheet,
     _format_source_ref,
@@ -20,6 +21,10 @@ from app.services.integration.commercial.flat_ingest import (
 
 class CommercialIngestService(BankIngestService):
     """Ingest commercial procurement files into normalized line-level raw rows."""
+
+    # Fixed registry key so all commercial flat files in one batch share one raw table.
+    REGISTRY_BANK_NAME = "commercial_unified"
+    GENERIC_PURCHASER_LABELS = frozenset({"", "默认来源", "商务网", "commercial", "默认"})
 
     BASE_COLUMNS = [
         "数据来源",
@@ -76,9 +81,21 @@ class CommercialIngestService(BankIngestService):
 
     OUTPUT_COLUMNS = BASE_COLUMNS + DETAIL_COLUMNS
 
-    def ingest_files(self, file_paths: list[str], bank_name: str, source_type: str = "commercial") -> IngestResult:
-        """Ingest commercial files and flatten into one normalized detail sheet per file."""
-        import_batch_id = str(uuid4())
+    def ingest_files(
+        self,
+        file_paths: list[str],
+        bank_name: str,
+        source_type: str = "commercial",
+        import_batch_id: str | None = None,
+    ) -> IngestResult:
+        """Ingest commercial files into one batch; multiple files/plants merge into unified storage."""
+        batch_id = self._resolve_import_batch_id(import_batch_id, source_type)
+        excel_paths = [
+            path
+            for path in file_paths
+            if Path(path).suffix.lower() in {".xlsx", ".xls"} and Path(path).exists() and Path(path).is_file()
+        ]
+        multi_file = len(excel_paths) > 1
         sheets_total = 0
         rows_total = 0
         new_templates = 0
@@ -88,35 +105,43 @@ class CommercialIngestService(BankIngestService):
             path = Path(file_path)
             if not path.exists() or not path.is_file():
                 failed_files += 1
-                self._write_log(import_batch_id, file_path, "error", "文件不存在或不可读取")
+                self._write_log(batch_id, file_path, "error", "文件不存在或不可读取")
                 continue
             if path.suffix.lower() not in {".xlsx", ".xls"}:
-                self._write_log(import_batch_id, file_path, "warning", "非Excel文件，已跳过")
+                self._write_log(batch_id, file_path, "warning", "非Excel文件，已跳过")
                 continue
 
+            file_purchaser = self._resolve_file_purchaser(path, bank_name, multi_file=multi_file)
             try:
                 workbook = self._read_workbook_fallback(path, pd)
                 detail_df = self._parse_commercial_workbook(
                     workbook,
-                    bank_name=bank_name,
+                    purchaser=file_purchaser,
                     source_file_stem=path.stem,
                 )
             except Exception as err:
                 failed_files += 1
-                self._write_log(import_batch_id, file_path, "error", f"商务网解析失败: {err}")
+                self._write_log(batch_id, file_path, "error", f"商务网解析失败: {err}")
                 continue
 
             if detail_df.empty:
-                self._write_log(import_batch_id, file_path, "warning", "未提取到有效明细行，已跳过")
+                self._write_log(batch_id, file_path, "warning", "未提取到有效明细行，已跳过")
                 continue
 
+            detail_df = self._apply_purchaser(detail_df, file_purchaser)
+
             file_hash = self._hash_file(path)
-            file_id = self._insert_file_record(import_batch_id, path, file_hash, bank_name, source_type)
+            file_id = self._insert_file_record(batch_id, path, file_hash, file_purchaser, source_type)
             sheet_name = "商务网明细"
             raw_columns = [str(col).strip() for col in detail_df.columns]
-            fingerprint = self._build_fingerprint(bank_name, source_type, sheet_name, raw_columns)
+            fingerprint = self._build_fingerprint(
+                self.REGISTRY_BANK_NAME,
+                source_type,
+                sheet_name,
+                raw_columns,
+            )
             raw_table_name, is_new = self._ensure_schema_registry(
-                bank_name=bank_name,
+                bank_name=self.REGISTRY_BANK_NAME,
                 source_type=source_type,
                 sheet_name=sheet_name,
                 fingerprint=fingerprint,
@@ -129,8 +154,8 @@ class CommercialIngestService(BankIngestService):
             inserted_rows = self._insert_raw_rows(
                 raw_table_name=raw_table_name,
                 dataframe=detail_df.fillna(""),
-                bank_name=bank_name,
-                import_batch_id=import_batch_id,
+                bank_name=file_purchaser,
+                import_batch_id=batch_id,
                 source_file_id=file_id,
                 source_sheet=sheet_name,
                 fingerprint=fingerprint,
@@ -147,14 +172,14 @@ class CommercialIngestService(BankIngestService):
                 source_type=source_type,
             )
             self._write_log(
-                import_batch_id,
+                batch_id,
                 str(path),
                 "info",
-                f"商务网解析完成，明细行 {inserted_rows}，表 {raw_table_name}",
+                f"商务网解析完成（采购单位={file_purchaser}），明细行 {inserted_rows}，批次表 {raw_table_name}",
             )
 
         return IngestResult(
-            import_batch_id=import_batch_id,
+            import_batch_id=batch_id,
             files_total=len(file_paths),
             sheets_total=sheets_total,
             rows_total=rows_total,
@@ -162,14 +187,50 @@ class CommercialIngestService(BankIngestService):
             failed_files=failed_files,
         )
 
+    def _resolve_import_batch_id(self, import_batch_id: str | None, source_type: str) -> str:
+        if not import_batch_id or not str(import_batch_id).strip():
+            return str(uuid4())
+        batch_id = str(import_batch_id).strip()
+        rows = self._client.query_all(
+            "SELECT source_type FROM meta_bank_files WHERE import_batch_id=? LIMIT 1;",
+            (batch_id,),
+        )
+        if not rows:
+            raise ValueError(f"目标批次不存在：{batch_id}")
+        existing = str(rows[0][0] or "")
+        if existing and existing != source_type:
+            raise ValueError(f"目标批次类型为 {existing}，与当前导入类型 {source_type} 不一致")
+        return batch_id
+
+    def _resolve_file_purchaser(self, path: Path, bank_name: str, *, multi_file: bool) -> str:
+        """Derive purchaser/plant label per file when one batch contains multiple sources."""
+        stem = normalize_purchaser_label(path.stem) or path.stem.strip()
+        fallback = normalize_purchaser_label(bank_name) or (bank_name or "").strip()
+        if multi_file and stem:
+            return stem
+        if fallback and fallback.lower() not in self.GENERIC_PURCHASER_LABELS:
+            return fallback
+        if stem:
+            return stem
+        return fallback or "未标注采购单位"
+
+    def _apply_purchaser(self, detail_df: pd.DataFrame, purchaser: str) -> pd.DataFrame:
+        if detail_df.empty or not purchaser or "采购单位" not in detail_df.columns:
+            return detail_df
+        out = detail_df.copy()
+        out["采购单位"] = purchaser
+        return out
+
     def _parse_commercial_workbook(
         self,
         workbook: dict[str, Any],
-        bank_name: str = "",
+        purchaser: str = "",
         source_file_stem: str = "",
     ) -> pd.DataFrame:
         """Parse workbook into normalized line-level commercial rows."""
         header_ctx: dict[str, str] = {}
+        if purchaser:
+            header_ctx["采购单位"] = purchaser
         records: list[dict[str, str]] = []
         for sheet_name, raw_df in workbook.items():
             if raw_df is None or raw_df.empty:
@@ -180,7 +241,7 @@ class CommercialIngestService(BankIngestService):
                 records.extend(
                     parse_old_commercial_sheet(
                         df,
-                        purchaser=bank_name,
+                        purchaser=purchaser,
                         output_columns=self.OUTPUT_COLUMNS,
                         source_file=source_file_stem,
                         source_sheet=str(sheet_name),
@@ -191,7 +252,7 @@ class CommercialIngestService(BankIngestService):
                 records.extend(
                     parse_new_commercial_sheet(
                         df,
-                        purchaser=bank_name,
+                        purchaser=purchaser,
                         output_columns=self.OUTPUT_COLUMNS,
                         source_file=source_file_stem,
                         source_sheet=str(sheet_name),

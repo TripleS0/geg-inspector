@@ -14,7 +14,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from app.services.integration.commercial.export_service import CommercialExportService, _split_company_names
-from app.services.integration.commercial.flat_ingest import is_win_status
+from app.services.integration.commercial.flat_ingest import is_win_status, normalize_purchaser_label
 from app.services.integration.commercial.ic_ingest_service import normalize_enterprise_name
 from app.services.shared.db.sqlite_client import SqliteClient
 
@@ -353,13 +353,8 @@ class CommercialAnalysisService:
                 is_winner_by_supplier = bool(cn and any(self._is_same_company(cn, wn) for wn in winner_norms))
                 is_winner = is_win_status(status) or is_winner_by_supplier
                 amount = base_amount
-                if is_winner and amount <= 0:
-                    amount = max(
-                        self._safe_amount(row.get("总价(元)", "")),
-                        self._safe_amount(row.get("含税合计总价(元)", "")),
-                    )
                 inquiry_no = self._to_text(row.get("询价单号"))
-                purchaser = self._to_text(row.get("采购单位"))
+                purchaser = normalize_purchaser_label(self._to_text(row.get("采购单位")))
                 key = (cn, inquiry_no, purchaser, self._to_text(row.get("序号")), amount if is_winner else 0.0)
                 if key in seen:
                     continue

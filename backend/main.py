@@ -72,12 +72,21 @@ class ImportRequest(BaseModel):
     file_paths: List[str] = Field(default_factory=list)
     bank_name: str = "默认来源"
     batch_name: Optional[str] = None
+    target_batch_id: Optional[str] = None
 
 
 class BatchRenamePayload(BaseModel):
     """Rename an import batch display name."""
 
     batch_name: str = Field(..., min_length=1, max_length=120)
+
+
+class BatchMergePayload(BaseModel):
+    """Merge source batches into one target batch."""
+
+    target_batch_id: str = Field(..., min_length=1)
+    source_batch_ids: List[str] = Field(default_factory=list)
+    batch_name: Optional[str] = None
 
 
 class RiskRunRequest(BaseModel):
@@ -735,6 +744,7 @@ def create_app() -> FastAPI:
                 bank_name=payload.bank_name,
                 source_type=source_type,
                 batch_name=payload.batch_name,
+                import_batch_id=payload.target_batch_id,
             ).to_dict(),
         )
 
@@ -745,6 +755,7 @@ def create_app() -> FastAPI:
         files: List[UploadFile] = File(...),
         bank_name: str = "默认来源",
         batch_name: Optional[str] = Form(default=None),
+        target_batch_id: Optional[str] = Form(default=None),
     ) -> Dict[str, str]:
         if source_type not in {"bank", "commercial", "enterprise", "wechat", "telecom"}:
             raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、enterprise、wechat 或 telecom")
@@ -774,6 +785,7 @@ def create_app() -> FastAPI:
                 bank_name=bank_name,
                 source_type=source_type,
                 batch_name=batch_name,
+                import_batch_id=target_batch_id,
             ).to_dict(),
         )
 
@@ -929,6 +941,18 @@ def create_app() -> FastAPI:
     def rename_batch(batch_id: str, payload: BatchRenamePayload) -> Dict[str, Any]:
         try:
             row = DatasetUseCase().rename_batch(batch_id, payload.batch_name)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return row.to_dict()
+
+    @app.post("/api/batches/merge")
+    def merge_batches(payload: BatchMergePayload) -> Dict[str, Any]:
+        try:
+            row = DatasetUseCase().merge_import_batches(
+                payload.target_batch_id,
+                payload.source_batch_ids,
+                batch_name=payload.batch_name,
+            )
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
         return row.to_dict()

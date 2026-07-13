@@ -4,12 +4,21 @@ export interface BatchInfo {
   file_count: number;
   imported_at: string;
   batch_name?: string;
+  source_labels?: string;
 }
 
 export function batchLabel(batch: Pick<BatchInfo, "import_batch_id" | "batch_name">): string {
   const name = batch.batch_name?.trim();
   if (name) return name;
   return `${batch.import_batch_id.slice(0, 8)}…`;
+}
+
+export function batchOptionLabel(batch: BatchInfo): string {
+  const labels = batch.source_labels?.trim();
+  const filePart = labels
+    ? `${batch.file_count} 文件：${labels}`
+    : `${batch.file_count} 文件`;
+  return `${batchLabel(batch)}（${filePart} · ${batch.imported_at}）`;
 }
 
 export interface TablePreview {
@@ -842,6 +851,16 @@ export const api = {
       body: JSON.stringify({ batch_name: batchName }),
     }),
 
+  mergeBatches: (targetBatchId: string, sourceBatchIds: string[], batchName?: string) =>
+    http<BatchInfo>("/api/batches/merge", {
+      method: "POST",
+      body: JSON.stringify({
+        target_batch_id: targetBatchId,
+        source_batch_ids: sourceBatchIds,
+        batch_name: batchName?.trim() || undefined,
+      }),
+    }),
+
   importByPaths: (
     sourceType: "bank" | "commercial" | "enterprise" | "wechat" | "telecom",
     filePaths: string[],
@@ -861,12 +880,16 @@ export const api = {
     sourceType: "bank" | "commercial" | "enterprise" | "wechat" | "telecom",
     files: File[],
     bankName: string,
-    batchName?: string
+    batchName?: string,
+    targetBatchId?: string,
   ) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     if (batchName?.trim()) {
       form.append("batch_name", batchName.trim());
+    }
+    if (targetBatchId?.trim()) {
+      form.append("target_batch_id", targetBatchId.trim());
     }
     const url = `${API_BASE}/api/upload/${sourceType}?bank_name=${encodeURIComponent(bankName)}`;
     const res = await fetch(url, { method: "POST", body: form });

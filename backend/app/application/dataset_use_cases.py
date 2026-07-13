@@ -18,6 +18,7 @@ class BatchInfo:
     file_count: int
     imported_at: str
     batch_name: str = ""
+    source_labels: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -70,9 +71,28 @@ class DatasetUseCase:
                 b.file_count,
                 b.imported_at,
                 names.get(b.import_batch_id, ""),
+                b.source_labels,
             )
             for b in batches
         ]
+
+    def find_batch_id_by_name(self, batch_name: str, source_type: str) -> Optional[str]:
+        """Return the most recently updated batch id for a display name + source type."""
+        name = (batch_name or "").strip()
+        kind = (source_type or "").strip()
+        if not name or not kind:
+            return None
+        rows = self._client.query_all(
+            """
+            SELECT import_batch_id
+            FROM meta_import_batch
+            WHERE batch_name=? AND source_type=?
+            ORDER BY updated_at DESC, import_batch_id DESC
+            LIMIT 1;
+            """,
+            (name, kind),
+        )
+        return str(rows[0][0]) if rows else None
 
     def set_batch_name(self, import_batch_id: str, batch_name: str, source_type: str) -> None:
         """Create or update the display name for an import batch."""
@@ -115,6 +135,125 @@ class DatasetUseCase:
             return match
         return batches[0]
 
+    def merge_import_batches(
+        self,
+        target_batch_id: str,
+        source_batch_ids: list[str],
+        *,
+        batch_name: str | None = None,
+    ) -> BatchInfo:
+        """Merge multiple import batches of the same source type into one target batch."""
+        target = (target_batch_id or "").strip()
+        if not target:
+            raise ValueError("目标批次不能为空")
+        sources = []
+        for raw in source_batch_ids:
+            bid = (raw or "").strip()
+            if not bid or bid == target:
+                continue
+            if bid not in sources:
+                sources.append(bid)
+        if not sources:
+            raise ValueError("请至少选择一个待合并的源批次")
+
+        target_kind = self.resolve_batch_kind(target)
+        if target_kind is None:
+            raise ValueError("目标批次不存在")
+        if target_kind not in self.META_FILE_SOURCE_TYPES:
+            raise ValueError("当前仅支持合并银行/商务网/微信/通讯批次")
+
+        for sid in sources:
+            kind = self.resolve_batch_kind(sid)
+            if kind is None:
+                raise ValueError(f"源批次不存在：{sid}")
+            if kind != target_kind:
+                raise ValueError(f"批次类型不一致，无法合并：{sid} ({kind})")
+
+        target_case = self._batch_case_binding(target)
+        for sid in sources:
+            source_case = self._batch_case_binding(sid)
+            if source_case and target_case and source_case[0] != target_case[0]:
+                raise ValueError(
+                    f"批次 {sid} 已绑定案件「{source_case[1]}」，"
+                    f"与目标批次案件「{target_case[1]}」不一致，请先解绑后再合并"
+                )
+
+        with self._client.transaction() as cursor:
+            for sid in sources:
+                cursor.execute(
+                    "SELECT file_id FROM meta_bank_files WHERE import_batch_id=?;",
+                    (sid,),
+                )
+                file_ids = [int(row[0]) for row in cursor.fetchall()]
+                raw_tables: list[str] = []
+                if file_ids:
+                    ph = ",".join("?" * len(file_ids))
+                    cursor.execute(
+                        f"SELECT DISTINCT raw_table_name FROM meta_bank_sheets WHERE file_id IN ({ph});",
+                        tuple(file_ids),
+                    )
+                    raw_tables = [str(row[0]) for row in cursor.fetchall()]
+                for tbl in raw_tables:
+                    cursor.execute(
+                        f"UPDATE {self._client.quote_ident(tbl)} SET import_batch_id=? WHERE import_batch_id=?;",
+                        (target, sid),
+                    )
+                cursor.execute(
+                    "UPDATE meta_bank_files SET import_batch_id=? WHERE import_batch_id=?;",
+                    (target, sid),
+                )
+                cursor.execute(
+                    "UPDATE meta_ingest_logs SET import_batch_id=? WHERE import_batch_id=?;",
+                    (target, sid),
+                )
+                if target_kind == "commercial":
+                    cursor.execute(
+                        "UPDATE rel_biz_enterprise_match SET import_batch_id=? WHERE import_batch_id=?;",
+                        (target, sid),
+                    )
+                    cursor.execute(
+                        "UPDATE ana_risk_event SET import_batch_id=? WHERE import_batch_id=?;",
+                        (target, sid),
+                    )
+                    cursor.execute(
+                        "UPDATE ana_risk_summary SET import_batch_id=? WHERE import_batch_id=?;",
+                        (target, sid),
+                    )
+                source_case = self._batch_case_binding(sid)
+                if source_case and not target_case:
+                    cursor.execute(
+                        "UPDATE rel_case_batch SET import_batch_id=? WHERE import_batch_id=?;",
+                        (target, sid),
+                    )
+                    target_case = source_case
+                elif source_case:
+                    cursor.execute("DELETE FROM rel_case_batch WHERE import_batch_id=?;", (sid,))
+                cursor.execute("DELETE FROM meta_import_batch WHERE import_batch_id=?;", (sid,))
+
+        if batch_name and batch_name.strip():
+            self.set_batch_name(target, batch_name.strip(), target_kind)
+
+        listed = self.list_batches(target_kind, limit=500)
+        match = next((b for b in listed if b.import_batch_id == target), None)
+        if match is not None:
+            return match
+        return BatchInfo(target, target_kind, 0, "", batch_name or "", "")
+
+    def _batch_case_binding(self, import_batch_id: str) -> Optional[tuple[int, str]]:
+        rows = self._client.query_all(
+            """
+            SELECT c.case_id, c.case_name
+            FROM rel_case_batch b
+            JOIN std_case c ON c.case_id = b.case_id
+            WHERE b.import_batch_id=?
+            LIMIT 1;
+            """,
+            (import_batch_id,),
+        )
+        if not rows:
+            return None
+        return int(rows[0][0]), str(rows[0][1])
+
     def list_batches(self, source_type: str | None = None, limit: int = 80) -> list[BatchInfo]:
         """Return recent batches from import metadata."""
         params: list[object] = []
@@ -125,7 +264,12 @@ class DatasetUseCase:
         params.append(max(1, min(int(limit), 500)))
         rows = self._client.query_all(
             f"""
-            SELECT import_batch_id, source_type, COUNT(*), MAX(imported_at)
+            SELECT
+                import_batch_id,
+                source_type,
+                COUNT(*),
+                MAX(imported_at),
+                GROUP_CONCAT(DISTINCT COALESCE(NULLIF(TRIM(bank_name), ''), file_name))
             FROM meta_bank_files
             {where}
             GROUP BY import_batch_id, source_type
@@ -136,10 +280,33 @@ class DatasetUseCase:
         )
         return self._attach_batch_names(
             [
-                BatchInfo(str(row[0]), str(row[1]), int(row[2]), str(row[3] or ""))
+                BatchInfo(
+                    str(row[0]),
+                    str(row[1]),
+                    int(row[2]),
+                    str(row[3] or ""),
+                    "",
+                    self._normalize_source_labels(str(row[4] or "")),
+                )
                 for row in rows
             ]
         )
+
+    @staticmethod
+    def _normalize_source_labels(raw: str) -> str:
+        if not raw:
+            return ""
+        from app.services.integration.commercial.flat_ingest import normalize_purchaser_label
+
+        parts = [normalize_purchaser_label(part.strip()) for part in raw.split(",")]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            if not part or part in seen:
+                continue
+            seen.add(part)
+            deduped.append(part)
+        return ",".join(deduped)
 
     def list_enterprise_batches(self, limit: int = 40) -> list[BatchInfo]:
         """Return recent enterprise-profile import batches."""

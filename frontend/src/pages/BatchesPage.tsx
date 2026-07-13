@@ -38,6 +38,11 @@ function BatchesPage() {
   const [renameBatchId, setRenameBatchId] = useState<string>("");
   const [renameValue, setRenameValue] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
+  const [mergeModalOpen, setMergeModalOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [mergeName, setMergeName] = useState("");
+  const [mergeSaving, setMergeSaving] = useState(false);
+  const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -152,6 +157,49 @@ function BatchesPage() {
     }
   };
 
+  const commercialSelected = useMemo(
+    () =>
+      items.filter(
+        (row) => selectedBatchIds.includes(row.import_batch_id) && row.source_type === "commercial",
+      ),
+    [items, selectedBatchIds],
+  );
+
+  const openMergeModal = () => {
+    if (commercialSelected.length < 2) {
+      message.warning("请至少选择 2 个商务网批次进行合并");
+      return;
+    }
+    const target = commercialSelected[0];
+    setMergeTargetId(target.import_batch_id);
+    setMergeName(target.batch_name?.trim() || batchLabel(target));
+    setMergeModalOpen(true);
+  };
+
+  const confirmMerge = async () => {
+    if (commercialSelected.length < 2) return;
+    const targetId = mergeTargetId || commercialSelected[0].import_batch_id;
+    const sourceIds = commercialSelected
+      .map((row) => row.import_batch_id)
+      .filter((id) => id !== targetId);
+    if (!sourceIds.length) {
+      message.warning("请选择一个不同的目标批次");
+      return;
+    }
+    setMergeSaving(true);
+    try {
+      await api.mergeBatches(targetId, sourceIds, mergeName.trim() || undefined);
+      message.success("批次已合并，可在商务网分析中统一查看");
+      setMergeModalOpen(false);
+      setSelectedBatchIds([]);
+      void fetchData();
+    } catch (err) {
+      message.error((err as Error).message);
+    } finally {
+      setMergeSaving(false);
+    }
+  };
+
   const selectedCase = cases.find((item) => item.case_id === selectedCaseId) ?? null;
   const guideSteps = buildWorkflowSteps({
     ...DEFAULT_WORKFLOW_SNAPSHOT,
@@ -216,6 +264,12 @@ function BatchesPage() {
         },
       },
       { title: "条数", dataIndex: "file_count", width: 88 },
+      {
+        title: "包含来源",
+        key: "source_labels",
+        ellipsis: true,
+        render: (_: unknown, row: BatchInfo) => row.source_labels?.trim() || "—",
+      },
       { title: "最近导入时间", dataIndex: "imported_at", width: 200 },
       {
         title: "操作",
@@ -247,9 +301,18 @@ function BatchesPage() {
               </Button>
             )}
             {row.source_type === "commercial" && (
-              <Button size="small" type="primary" onClick={() => navigate(`/risk?batch=${encodeURIComponent(row.import_batch_id)}`)}>
-                风险分析
-              </Button>
+              <>
+                <Button
+                  size="small"
+                  type="primary"
+                  onClick={() => navigate(`/commercial-analysis?batch=${encodeURIComponent(row.import_batch_id)}`)}
+                >
+                  商务网分析
+                </Button>
+                <Button size="small" onClick={() => navigate(`/risk?batch=${encodeURIComponent(row.import_batch_id)}`)}>
+                  风险分析
+                </Button>
+              </>
             )}
             {row.source_type === "enterprise" && (
               <Button
@@ -305,6 +368,15 @@ function BatchesPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <Title level={4} style={{ margin: 0 }}>批次管理</Title>
         <Space>
+          {(filter === "commercial" || filter === "all") && (
+            <Button
+              type="primary"
+              disabled={commercialSelected.length < 2}
+              onClick={openMergeModal}
+            >
+              合并商务网批次（{commercialSelected.length}）
+            </Button>
+          )}
           <Segmented
             options={(Object.keys(SOURCE_LABELS) as Source[]).map((key) => ({ value: key, label: SOURCE_LABELS[key] }))}
             value={filter}
@@ -314,10 +386,21 @@ function BatchesPage() {
         </Space>
       </div>
       <Paragraph style={{ color: "#5b6477" }}>
-        「全部」包含银行、商务网、微信、通讯话单与工商（企查查/工商库）批次，按导入时间混合排序。删除批次会移除该批在库中的业务数据与元数据，请谨慎操作。
+        「全部」包含银行、商务网、微信、通讯话单与工商（企查查/工商库）批次，按导入时间混合排序。商务网可将金湾、珠海等多个发电厂批次勾选后合并为一个批次再分析。
       </Paragraph>
       <Table
         rowKey="import_batch_id"
+        rowSelection={
+          filter === "commercial" || filter === "all"
+            ? {
+                selectedRowKeys: selectedBatchIds,
+                onChange: (keys) => setSelectedBatchIds(keys.map(String)),
+                getCheckboxProps: (row: BatchInfo) => ({
+                  disabled: row.source_type !== "commercial",
+                }),
+              }
+            : undefined
+        }
         columns={columns}
         dataSource={items}
         loading={loading}
@@ -361,6 +444,41 @@ function BatchesPage() {
               尚无案件，去创建
             </Button>
           )}
+        </Space>
+      </Modal>
+      <Modal
+        title="合并商务网批次"
+        open={mergeModalOpen}
+        confirmLoading={mergeSaving}
+        onCancel={() => setMergeModalOpen(false)}
+        onOk={() => void confirmMerge()}
+      >
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <Typography.Text type="secondary">
+            将选中的 {commercialSelected.length} 个批次合并为一个，合并后可在商务网分析中统一统计金湾、珠海等所有采购单位数据。
+          </Typography.Text>
+          <div>
+            <Typography.Text>目标批次（保留）</Typography.Text>
+            <Select
+              style={{ width: "100%", marginTop: 8 }}
+              value={mergeTargetId || undefined}
+              onChange={setMergeTargetId}
+              options={commercialSelected.map((row) => ({
+                value: row.import_batch_id,
+                label: `${batchLabel(row)}${row.source_labels ? ` · ${row.source_labels}` : ""}`,
+              }))}
+            />
+          </div>
+          <div>
+            <Typography.Text>合并后批次名称</Typography.Text>
+            <Input
+              style={{ marginTop: 8 }}
+              value={mergeName}
+              maxLength={120}
+              placeholder="如：2024年商务网询价"
+              onChange={(event) => setMergeName(event.target.value)}
+            />
+          </div>
         </Space>
       </Modal>
       </Card>

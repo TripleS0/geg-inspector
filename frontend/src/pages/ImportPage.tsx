@@ -138,7 +138,7 @@ function ImportPage() {
       <Card className="app-card" bordered={false}>
         <Title level={4}>数据导入</Title>
         <Paragraph style={{ color: "#5b6477", marginBottom: 16 }}>
-          支持本地表格文件批量导入；银行流水另支持图片/PDF 离线 OCR 识别后校对录入。
+          支持本地表格文件批量导入；银行流水另支持图片/PDF 离线 OCR 识别后校对录入。商务网请将多个发电厂/采购单位文件在同一批次中多选导入，系统会按批次整合后统一分析。
         </Paragraph>
         {importForm.formElement}
         <Space>

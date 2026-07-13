@@ -30,6 +30,7 @@ import {
   api,
   BatchInfo,
   batchLabel,
+  batchOptionLabel,
   CommercialAnalysisFilter,
   CommercialAnalysisRecord,
   CommercialAnalysisResponse,
@@ -209,6 +210,17 @@ function formatCompactAmount(value: unknown) {
   if (Math.abs(n) >= 1e8) return `${(n / 1e8).toFixed(2)} 亿`;
   if (Math.abs(n) >= 1e4) return `${(n / 1e4).toFixed(2)} 万`;
   return formatAmount(n);
+}
+
+function formatPurchaserLabel(name: string): string {
+  const text = (name || "").trim();
+  if (!text) return text;
+  return text
+    .replace(/^raw_/i, "")
+    .replace(/^[0-9a-f]{32}_/i, "")
+    .replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i, "")
+    .replace(/^[0-9a-f]{8,64}_/i, "")
+    .trim() || name;
 }
 
 function winRate(participation: number, wins: number) {
@@ -954,6 +966,14 @@ function CommercialAnalysisPage() {
   const purchaserAmountOption = useMemo(() => {
     const top = records?.summary.top_purchaser_amounts || [];
     if (!top.length) return null;
+    const merged = new Map<string, number>();
+    for (const [rawName, value] of top) {
+      const name = formatPurchaserLabel(String(rawName));
+      merged.set(name, (merged.get(name) || 0) + Number(value || 0));
+    }
+    const data = [...merged.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => ({ name, value }));
     return {
       color: chartPalette,
       tooltip: {
@@ -967,7 +987,7 @@ function CommercialAnalysisPage() {
           type: "pie",
           radius: ["42%", "68%"],
           center: ["50%", "44%"],
-          data: top.map(([name, value]) => ({ name, value })),
+          data,
           label: { formatter: "{b}\n{d}%" },
         },
       ],
@@ -1025,7 +1045,7 @@ function CommercialAnalysisPage() {
             onChange={(val) => setBatchId(val)}
             options={batches.map((b) => ({
               value: b.import_batch_id,
-              label: `${batchLabel(b)} (${b.file_count} 文件 · ${b.imported_at})`,
+              label: batchOptionLabel(b),
             }))}
           />
           <Button loading={exporting} disabled={viewMode !== "stats"} onClick={() => void exportReport()}>

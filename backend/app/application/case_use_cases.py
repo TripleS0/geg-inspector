@@ -181,7 +181,11 @@ class CaseUseCase:
                 (batch_id,),
             )
             if existing and int(existing[0][0]) != case_id:
-                raise ValueError(f"批次 {batch_id} 已归属其他案件")
+                raise ValueError(
+                    f"批次 {batch_id} 已归属其他案件。"
+                    "每次新建案件导入都会生成新批次；若需复用已有批次，请在「打开案件」中绑定未归属批次，"
+                    "或在批次管理中显式追加到目标批次。"
+                )
             if existing:
                 continue
             self._client.execute(

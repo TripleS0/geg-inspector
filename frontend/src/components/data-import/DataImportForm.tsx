@@ -3,6 +3,7 @@ import { Alert, Card, Form, Input, List, Radio, Space, Tabs, Tag, Typography, Up
 import { InboxOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
 import type { UploadFile } from "antd";
+import dayjs from "dayjs";
 import { api, type BankOcrJob, type BankOcrProfile } from "../../api";
 import { SOURCE_LABELS, SourceType } from "./constants";
 
@@ -58,6 +59,10 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     if (activeFiles.length === 0) return;
     const current = String(form.getFieldValue("batch_name") || "").trim();
     if (current) return;
+    if (sourceType === "commercial") {
+      form.setFieldsValue({ batch_name: `商务网-${dayjs().format("YYYY-MM-DD-HHmmss")}` });
+      return;
+    }
     const first = activeFiles[0].name.replace(/\.(xlsx|xls|jpg|jpeg|png|pdf)$/i, "");
     form.setFieldsValue({ batch_name: first });
   }, [files, ocrFiles, form, sourceType, bankImportMode]);
@@ -83,6 +88,8 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
   };
 
   const isOcrMode = sourceType === "bank" && bankImportMode === "ocr";
+
+  const isCommercial = sourceType === "commercial";
 
   const uploadSection =
     sourceType === "bank" && allowOcr ? (
@@ -178,7 +185,11 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
         >
           <p className="ant-upload-drag-icon"><InboxOutlined /></p>
           <p className="ant-upload-text">点击或拖拽表格文件到此区域</p>
-          <p className="ant-upload-hint">支持多选；支持扩展名 .xlsx、.xls；数据仅写入本地数据库</p>
+          <p className="ant-upload-hint">
+            {isCommercial
+              ? "支持多选；同一批次可合并多个发电厂/采购单位文件（如 A发电厂.xlsx + B发电厂.xlsx），分析时按批次统一统计"
+              : "支持多选；支持扩展名 .xlsx、.xls；数据仅写入本地数据库"}
+          </p>
         </Dragger>
       </Form.Item>
     );
@@ -200,25 +211,48 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
             ))}
           </Radio.Group>
         </Form.Item>
+        {isCommercial ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="多文件请一次选齐导入，或到「批次管理」追加到已有批次"
+            description="每次导入都会创建新的独立批次；批次名称仅用于显示识别。若要把文件合并进已有批次，请在批次管理中选择目标批次后追加导入。"
+          />
+        ) : null}
         <Form.Item
           label="批次名称"
           name="batch_name"
-          tooltip="导入后可识别该批数据的名称"
+          tooltip={
+            isCommercial
+              ? "一次导入对应一个批次；多文件会整合到该批次，后续分析与导出均按批次进行"
+              : "导入后可识别该批数据的名称"
+          }
           rules={[{ max: 120, message: "批次名称不能超过 120 个字符" }]}
         >
-          <Input placeholder="如：张三建行流水 / 2024年商务网询价" disabled={disabled} />
+          <Input
+            placeholder={isCommercial ? "如：2024年商务网询价（含多发电厂）" : "如：张三建行流水 / 2024年商务网询价"}
+            disabled={disabled}
+          />
         </Form.Item>
         <Form.Item
-          label="来源标识 / 银行名称"
+          label={isCommercial ? "默认采购单位（单文件可选）" : "来源标识 / 银行名称"}
           name="bank_name"
-          tooltip="银行流水建议填写银行简称"
+          tooltip={
+            isCommercial
+              ? "多文件导入时按文件名识别采购单位（如 A发电厂数据.xlsx）；单文件时可在此填写默认采购单位"
+              : "银行流水建议填写银行简称"
+          }
         >
-          <Input placeholder="如：工商银行 / 光大银行 / 商务网 / 微信" disabled={disabled} />
+          <Input
+            placeholder={isCommercial ? "多文件可留空，将按各文件名识别" : "如：工商银行 / 光大银行 / 商务网 / 微信"}
+            disabled={disabled}
+          />
         </Form.Item>
         {uploadSection}
       </Form>
     ),
-    [compact, disabled, form, uploadSection]
+    [compact, disabled, form, isCommercial, uploadSection]
   );
 
   return {

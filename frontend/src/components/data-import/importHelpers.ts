@@ -25,6 +25,12 @@ export function buildReadableLogs(result: Record<string, unknown>): string[] {
   if (rowsTotal > 0) {
     logs.push(`入库总行数：${rowsTotal} 行`);
   }
+  if (sourceType === "commercial" && filesTotal > 1) {
+    logs.push(`本批次已整合 ${filesTotal} 个文件，分析与导出按批次统一处理`);
+  }
+  if (sourceType === "commercial") {
+    logs.push("提示：如需把文件追加到已有批次，请到「批次管理」选择目标批次后导入");
+  }
   if (newTemplates > 0) {
     logs.push(`新增模板：${newTemplates} 个`);
   }

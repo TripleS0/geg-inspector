@@ -55,14 +55,26 @@ class ImportUseCase:
         bank_name: str,
         source_type: str,
         batch_name: str | None = None,
+        import_batch_id: str | None = None,
         standardize: bool = True,
     ) -> ImportSummary:
         """Import files and run source-specific post-processing."""
         source_key = (source_type or "bank").strip().lower()
         if source_key not in {"bank", "commercial", "wechat", "telecom"}:
             raise ValueError("source_type 仅支持 bank、commercial、wechat 或 telecom")
+        dataset = DatasetUseCase(self._client)
+        resolved_batch_id = import_batch_id
         bundle = get_integration_bundle(source_key)
-        ingest_result = bundle.ingest_cls(self._client).ingest_files(file_paths, bank_name, source_key)
+        ingest_cls = bundle.ingest_cls(self._client)
+        if source_key == "commercial":
+            ingest_result = ingest_cls.ingest_files(
+                file_paths,
+                bank_name,
+                source_key,
+                import_batch_id=resolved_batch_id,
+            )
+        else:
+            ingest_result = ingest_cls.ingest_files(file_paths, bank_name, source_key)
         if ingest_result.rows_total <= 0:
             raise ValueError(
                 f"导入未产生有效数据（失败 {ingest_result.failed_files}/{ingest_result.files_total} 个文件），请检查文件格式与内容"
@@ -71,7 +83,7 @@ class ImportUseCase:
         if source_key == "bank" and standardize:
             standardized_rows = int(bundle.mapping_cls(self._client).standardize_batch(ingest_result.import_batch_id))
         if batch_name and batch_name.strip():
-            DatasetUseCase(self._client).set_batch_name(
+            dataset.set_batch_name(
                 ingest_result.import_batch_id,
                 batch_name.strip(),
                 source_key,

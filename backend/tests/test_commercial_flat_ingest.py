@@ -206,6 +206,96 @@ class CommercialFlatIngestTests(unittest.TestCase):
         loser_row = next(row for row in records if row["公司名称"] == "甲公司")
         self.assertEqual(loser_row["中标金额(元)"], "")
 
+    def test_parse_new_format_uses_win_price_over_bid_price(self) -> None:
+        rows = [
+            [
+                "GZCT014420",
+                "联合中标项目",
+                "邀请",
+                "工程",
+                "询价",
+                120000,
+                "Q2306010001",
+                "广州熹润贸易有限公司",
+                11600.02,
+                "2023-06-29 08:26:15",
+                "广州熹润贸易有限公司,东莞市利东机电设备有限公司",
+                113510,
+                "经办人A",
+                "",
+                "",
+                "2023-06-29 09:38:46",
+                "",
+                "",
+                "",
+            ],
+        ]
+        records = parse_new_commercial_sheet(
+            _sheet_df(NEW_HEADERS, rows),
+            purchaser="珠海发电厂",
+            output_columns=self.output_columns,
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["中标金额(元)"], "113510")
+        self.assertEqual(records[0]["总价(元)"], "11600.02")
+        self.assertEqual(records[0]["状态"], "已中标")
+
+    def test_parse_new_format_no_winner_when_inquiry_win_price_all_empty(self) -> None:
+        rows = [
+            [
+                "SRC004",
+                "无中标价格项目",
+                "邀请",
+                "工程",
+                "询价",
+                50000,
+                "Q2205000003",
+                "甲公司",
+                48000,
+                "2022-05-23",
+                "甲公司",
+                "",
+                "赵六",
+                "",
+                "",
+                "2022-05-24",
+                "",
+                "",
+                "",
+            ],
+            [
+                "SRC004",
+                "无中标价格项目",
+                "邀请",
+                "工程",
+                "询价",
+                50000,
+                "Q2205000004",
+                "乙公司",
+                49000,
+                "2022-05-23",
+                "甲公司",
+                "",
+                "赵六",
+                "",
+                "",
+                "2022-05-24",
+                "",
+                "",
+                "",
+            ],
+        ]
+        records = parse_new_commercial_sheet(
+            _sheet_df(NEW_HEADERS, rows),
+            purchaser="珠海发电厂",
+            output_columns=self.output_columns,
+        )
+        self.assertEqual(len(records), 2)
+        for row in records:
+            self.assertEqual(row["状态"], "未中标")
+            self.assertEqual(row["中标供应商"], "")
+            self.assertEqual(row["中标金额(元)"], "")
+
     def test_parse_new_format_winner_by_company_match(self) -> None:
         rows = [
             [
@@ -392,6 +482,16 @@ class CommercialFlatIngestTests(unittest.TestCase):
             )
         return str(path)
 
+    def test_normalize_purchaser_label(self) -> None:
+        from app.services.integration.commercial.flat_ingest import normalize_purchaser_label
+
+        self.assertEqual(
+            normalize_purchaser_label("419b69cd619d4e838df99ac9960fed9a_珠海发电厂"),
+            "珠海发电厂",
+        )
+        self.assertEqual(normalize_purchaser_label("金湾电厂"), "金湾电厂")
+        self.assertEqual(normalize_purchaser_label("raw_abc_商务网明细"), "abc_商务网明细")
+
     def test_import_flat_workbook(self) -> None:
         old_rows = [
             [
@@ -450,6 +550,142 @@ class CommercialFlatIngestTests(unittest.TestCase):
         self.assertTrue(any("旧商务网数据" in src for src in sources), sources)
         self.assertTrue(any("新商务网数据" in src for src in sources), sources)
         self.assertFalse(any("商务网明细" in src for src in sources), sources)
+
+    def _write_old_flat_file(self, path: Path, project_code: str, company: str) -> None:
+        rows = [
+            [
+                "B001",
+                project_code,
+                "S001",
+                "2024-01-01",
+                company,
+                "已中标",
+                100000,
+                f"项目{project_code}",
+                "工程招标",
+                "",
+                "",
+                "2024-01-02",
+                "",
+                120000,
+                "经办人",
+            ],
+        ]
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            _sheet_df(OLD_HEADERS, rows).to_excel(
+                writer,
+                index=False,
+                header=False,
+                sheet_name="旧网数据",
+            )
+
+    def test_multi_file_single_batch_merged(self) -> None:
+        path_a = Path(self._tmp.name) / "A发电厂数据.xlsx"
+        path_b = Path(self._tmp.name) / "B发电厂数据.xlsx"
+        self._write_old_flat_file(path_a, "QA1001", "甲公司")
+        self._write_old_flat_file(path_b, "QB1002", "乙公司")
+
+        summary = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_a), str(path_b)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="多发电厂批次",
+        )
+        self.assertEqual(summary.failed_files, 0)
+        self.assertEqual(summary.files_total, 2)
+        self.assertEqual(summary.rows_total, 2)
+
+        export = CommercialExportService(self.client)
+        rows = export._load_commercial_rows(summary.import_batch_id)
+        purchasers = {row.get("采购单位", "") for row in rows}
+        self.assertIn("A发电厂数据", purchasers)
+        self.assertIn("B发电厂数据", purchasers)
+
+        table_rows = self.client.query_all(
+            """
+            SELECT DISTINCT s.raw_table_name
+            FROM meta_bank_sheets s
+            JOIN meta_bank_files f ON f.file_id=s.file_id
+            WHERE f.import_batch_id=?;
+            """,
+            (summary.import_batch_id,),
+        )
+        self.assertEqual(len(table_rows), 1)
+
+    def test_append_files_to_existing_commercial_batch(self) -> None:
+        path_a = Path(self._tmp.name) / "A发电厂数据.xlsx"
+        path_b = Path(self._tmp.name) / "B发电厂数据.xlsx"
+        self._write_old_flat_file(path_a, "QA2001", "甲公司")
+        self._write_old_flat_file(path_b, "QB2002", "乙公司")
+
+        first = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_a)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="追加测试批次",
+        )
+        second = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_b)],
+            bank_name="默认来源",
+            source_type="commercial",
+            import_batch_id=first.import_batch_id,
+        )
+        self.assertEqual(first.import_batch_id, second.import_batch_id)
+        rows = CommercialExportService(self.client)._load_commercial_rows(first.import_batch_id)
+        self.assertEqual(len(rows), 2)
+
+    def test_append_by_same_batch_name_creates_separate_batches(self) -> None:
+        path_a = Path(self._tmp.name) / "A发电厂数据.xlsx"
+        path_b = Path(self._tmp.name) / "B发电厂数据.xlsx"
+        self._write_old_flat_file(path_a, "QA3001", "甲公司")
+        self._write_old_flat_file(path_b, "QB3002", "乙公司")
+
+        first = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_a)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="统一商务网批次",
+        )
+        second = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_b)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="统一商务网批次",
+        )
+        self.assertNotEqual(first.import_batch_id, second.import_batch_id)
+        rows_first = CommercialExportService(self.client)._load_commercial_rows(first.import_batch_id)
+        rows_second = CommercialExportService(self.client)._load_commercial_rows(second.import_batch_id)
+        self.assertEqual(len(rows_first), 1)
+        self.assertEqual(len(rows_second), 1)
+
+    def test_merge_existing_commercial_batches(self) -> None:
+        path_a = Path(self._tmp.name) / "A发电厂数据.xlsx"
+        path_b = Path(self._tmp.name) / "B发电厂数据.xlsx"
+        self._write_old_flat_file(path_a, "QA4001", "甲公司")
+        self._write_old_flat_file(path_b, "QB4002", "乙公司")
+
+        batch_a = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_a)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="金湾电厂",
+        )
+        batch_b = ImportUseCase(self.client).import_source(
+            file_paths=[str(path_b)],
+            bank_name="默认来源",
+            source_type="commercial",
+            batch_name="珠海发电厂",
+        )
+        from app.application.dataset_use_cases import DatasetUseCase
+
+        merged = DatasetUseCase(self.client).merge_import_batches(
+            batch_a.import_batch_id,
+            [batch_b.import_batch_id],
+            batch_name="2024商务网合并",
+        )
+        self.assertEqual(merged.file_count, 2)
+        rows = CommercialExportService(self.client)._load_commercial_rows(merged.import_batch_id)
+        self.assertEqual(len(rows), 2)
 
     def test_import_legacy_wide_workbook(self) -> None:
         mock_path = Path(__file__).resolve().parents[2] / "mock-data" / "02_commercial_商务网询价.xlsx"
