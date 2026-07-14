@@ -70,19 +70,27 @@ function IdentifierTags({ links, onRemove }: { links: PersonLink[]; onRemove?: (
   if (!links.length) return <Text type="secondary">—</Text>;
   return (
     <Space size={[4, 4]} wrap>
-      {links.map((link) => (
-        <Tag
-          key={link.link_id}
-          className="link-matrix-tag"
-          closable={!!onRemove}
-          onClose={(e) => {
-            e.preventDefault();
-            onRemove?.(link.link_id);
-          }}
-        >
-          {link.identifier_value}
-        </Tag>
-      ))}
+      {links.map((link) => {
+        const bankName = typeof link.source_ref?.bank_name === "string"
+          ? link.source_ref.bank_name
+          : "";
+        const label = bankName && ["bank_card", "bank_acct"].includes(link.identifier_type)
+          ? `${bankName} · ${link.identifier_value}`
+          : link.identifier_value;
+        return (
+          <Tag
+            key={link.link_id}
+            className="link-matrix-tag"
+            closable={!!onRemove}
+            onClose={(e) => {
+              e.preventDefault();
+              onRemove?.(link.link_id);
+            }}
+          >
+            {label}
+          </Tag>
+        );
+      })}
     </Space>
   );
 }
@@ -330,7 +338,11 @@ function PersonLinkingPanel({
         width: 100,
         render: (_: unknown, row: IdentifierCandidate) => (
           <Tooltip title={`批次 ${row.source_batch_id}`}>
-            <Tag>{row.source_type || "—"}</Tag>
+            <Tag>
+              {typeof row.source_ref?.bank_name === "string" && row.source_ref.bank_name
+                ? row.source_ref.bank_name
+                : row.source_type || "—"}
+            </Tag>
           </Tooltip>
         ),
       },

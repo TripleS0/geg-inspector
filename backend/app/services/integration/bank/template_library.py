@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.services.shared.db.sqlite_client import SqliteClient
 
@@ -25,6 +26,8 @@ class BankTemplate:
     signature_columns: tuple[str, ...] = ()
     user_template_id: str | None = None
     template_type: str = "txn_detail"
+    direction_rules: dict[str, str] | None = None
+    datetime_patterns: dict[str, Any] | None = None
 
 
 _MERGED_TEMPLATE_CACHE: dict[str, tuple[BankTemplate, ...]] = {}
@@ -84,7 +87,7 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
         header_row_hint=None,
         field_map={
             "person_name": ("客户名称", "账户名称"),
-            "acct_no": ("交易卡号", "账号"),
+            "acct_no": ("账号", "交易卡号"),
             "counterparty_name": ("对方户名",),
             "counterparty_account": ("对方账号",),
             "txn_date": ("交易日期",),
@@ -98,6 +101,21 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
             "txn_org_name": ("交易机构名称",),
         },
         signature_columns=("借贷方向", "交易卡号", "交易日期", "交易时间"),
+    ),
+    BankTemplate(
+        template_id="icbc_account_v1",
+        bank_display_name="工商银行",
+        bank_keywords=("工商银行", "工行", "icbc"),
+        sheet_keywords=("sheet1", "个人开户", "开户"),
+        header_row_hint=None,
+        field_map={
+            "person_name": ("姓名",),
+            "acct_no": ("账号对应卡号", "账号"),
+            "id_no": ("证件号码",),
+            "open_date": ("开户日期",),
+        },
+        signature_columns=("姓名", "账号类型", "账号对应卡号", "开户网点", "销户日期"),
+        template_type="account_profile",
     ),
     BankTemplate(
         template_id="icbc_txn_v1",
@@ -120,6 +138,8 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
             "txn_org_name": ("交易场所简称",),
         },
         signature_columns=("借贷标志", "交易时间", "对方账号", "交易场所简称"),
+        direction_rules={"1": "支出", "2": "收入"},
+        datetime_patterns={"formats": ["%Y-%m-%d-%H.%M.%S.%f", "%Y-%m-%d-%H.%M.%S"]},
     ),
     BankTemplate(
         template_id="icbc_txn_v2",
@@ -143,6 +163,23 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
             "txn_org_name": ("交易场所简称",),
         },
         signature_columns=("交易日期", "记账时间", "交易币种", "对方卡号/账号"),
+        direction_rules={"1": "支出", "2": "收入"},
+    ),
+    BankTemplate(
+        template_id="cgb_account_v1",
+        bank_display_name="广发银行",
+        bank_keywords=("广发银行", "广发行", "广发", "cgb"),
+        sheet_keywords=("开户资料",),
+        header_row_hint=None,
+        field_map={
+            "person_name": ("客户名称",),
+            "acct_no": ("账号", "卡号"),
+            "id_no": ("证件号码",),
+            "mobile": ("移动电话", "手机号码"),
+            "open_date": ("开户日期",),
+        },
+        signature_columns=("客户名称", "客户编号", "证件号码", "卡号", "账号", "移动电话"),
+        template_type="account_profile",
     ),
     BankTemplate(
         template_id="cgb_txn_v1",
@@ -166,14 +203,77 @@ BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (
         signature_columns=("借贷标识", "对手账号", "摘要中文"),
     ),
     BankTemplate(
+        template_id="abc_corp_account_v1",
+        bank_display_name="农业银行",
+        bank_keywords=("农业银行", "农行", "abc", "dgzd"),
+        sheet_keywords=("对公主档",),
+        header_row_hint=1,
+        field_map={
+            "person_name": ("户名",),
+            "acct_no": ("客户账号",),
+            "open_date": ("开户日期",),
+        },
+        signature_columns=("户名", "产品名称", "客户账号", "核算账号", "开户行标识", "开户机构名称"),
+        template_type="account_profile",
+    ),
+    BankTemplate(
+        template_id="abc_person_customer_v1",
+        bank_display_name="农业银行",
+        bank_keywords=("农业银行", "农行", "abc", "grzdkhxx"),
+        sheet_keywords=("个人客户主档（客户信息）", "个人客户信息"),
+        header_row_hint=1,
+        field_map={
+            "person_name": ("姓名",),
+            "acct_no": ("客户账号",),
+            "id_no": ("证件号码",),
+            "mobile": ("手机号码",),
+        },
+        signature_columns=("姓名", "客户账号", "客户号", "省市号", "证件号码", "手机号码"),
+        template_type="account_profile",
+    ),
+    BankTemplate(
+        template_id="abc_person_account_v1",
+        bank_display_name="农业银行",
+        bank_keywords=("农业银行", "农行", "abc", "grzdzhxx"),
+        sheet_keywords=("个人客户主档（账户信息）", "个人客户账户信息"),
+        header_row_hint=1,
+        field_map={
+            "person_name": ("姓名",),
+            "acct_no": ("客户账号",),
+            "open_date": ("开户日期",),
+        },
+        signature_columns=("姓名", "产品名称", "客户账号", "核算账号", "开户行标识", "开户机构名称"),
+        template_type="account_profile",
+    ),
+    BankTemplate(
+        template_id="abc_corp_txn_v1",
+        bank_display_name="农业银行",
+        bank_keywords=("农业银行", "农行", "abc", "dgmx"),
+        sheet_keywords=("对公明细",),
+        header_row_hint=2,
+        field_map={
+            "acct_no": ("客户账号",),
+            "counterparty_name": ("对手方户名",),
+            "counterparty_account": ("对手方账号",),
+            "txn_date": ("交易日期",),
+            "txn_time_raw": ("交易时间",),
+            "txn_amount": ("交易金额",),
+            "balance": ("账户余额",),
+            "summary": ("摘要",),
+            "txn_org_no": ("交易行号",),
+            "txn_org_name": ("交易行名",),
+        },
+        signature_columns=("客户账号", "核算账号", "交易行号", "交易代码", "对手方账号"),
+    ),
+    BankTemplate(
         template_id="abc_txn_v1",
         bank_display_name="农业银行",
         bank_keywords=("农业银行", "农行"),
         sheet_keywords=("个人客户明细",),
-        header_row_hint=3,
+        header_row_hint=2,
         field_map={
             "person_name": (),
-            "acct_no": ("客户账号", "核算账号"),
+            "acct_no": ("客户账号",),
             "counterparty_name": ("对手方户名",),
             "counterparty_account": ("对手方账号",),
             "txn_date": ("交易日期",),
@@ -213,6 +313,7 @@ ACCOUNT_SHEET_HINTS: tuple[str, ...] = (
     "账户信息",
     "客户信息",
     "客户主档",
+    "主档",
     "开户资料",
 )
 
@@ -225,9 +326,13 @@ TXN_SHEET_HINTS: tuple[str, ...] = (
 
 BANK_HINTS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("建设银行", ("建行", "建设银行", "ccb"), ("交易明细", "开户信息")),
-    ("工商银行", ("工行", "工商银行", "icbc"), ("sheet1",)),
+    ("工商银行", ("工行", "工商银行", "icbc", "retail", "个人开户"), ("sheet1",)),
     ("广发银行", ("广发", "广发行", "广发银行", "cgb"), ("旧核心交易流水", "开户资料")),
-    ("农业银行", ("农行", "农业银行", "abc"), ("个人客户明细", "客户信息", "客户主档")),
+    (
+        "农业银行",
+        ("农行", "农业银行", "abc", "dgmx", "dgzd", "grmx", "grzdkhxx", "grzdzhxx"),
+        ("对公明细", "对公主档", "个人客户明细", "个人客户主档", "客户信息", "账户信息"),
+    ),
 )
 
 
@@ -248,13 +353,22 @@ def match_template(
     bank_norm = _n(bank_name)
     sheet_norm = _n(sheet_name)
     templates = list_templates_for_match(client)
-    for item in templates:
-        if not _type_ok(item, sheet_type):
-            continue
-        hit_bank = any(_n(k) in bank_norm for k in item.bank_keywords if k)
+    candidates = [
+        item
+        for item in templates
+        if _type_ok(item, sheet_type)
+        and any(_n(keyword) in bank_norm for keyword in item.bank_keywords if keyword)
+    ]
+    for item in candidates:
         hit_sheet = any(_n(k) in sheet_norm for k in item.sheet_keywords if k)
-        if hit_bank and hit_sheet:
+        if hit_sheet:
             return item
+
+    # When the bank is known but its sheet label is unfamiliar, defer to
+    # header-based matching. Do not borrow another bank's same-named sheet.
+    if candidates:
+        return None
+
     for item in templates:
         if not _type_ok(item, sheet_type):
             continue
@@ -373,6 +487,16 @@ def infer_sheet_purpose(sheet_name: str) -> str:
     if any(_n(x) in text for x in TXN_SHEET_HINTS):
         return "txn_detail"
     return "txn_detail"
+
+
+def infer_file_purpose(file_name: str) -> str | None:
+    """Return an explicit purpose from an uploaded filename, if it has one."""
+    text = _n(file_name)
+    if any(_n(item) in text for item in ACCOUNT_SHEET_HINTS):
+        return "account_profile"
+    if any(_n(item) in text for item in TXN_SHEET_HINTS):
+        return "txn_detail"
+    return None
 
 
 def infer_sheet_purpose_by_columns(columns: list[str], fallback: str = "txn_detail") -> str:

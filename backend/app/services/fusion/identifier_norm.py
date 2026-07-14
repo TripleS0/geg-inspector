@@ -9,6 +9,22 @@ from app.services.integration.commercial.ic_ingest_service import normalize_ente
 from app.services.integration.telecom.phone_utils import normalize_phone
 
 _DIGITS = re.compile(r"\D+")
+_BANK_ACCOUNT_SEPARATOR = "|"
+_BANK_ALIASES = {
+    "工商银行": "工商银行",
+    "工行": "工商银行",
+    "ICBC": "工商银行",
+    "建设银行": "建设银行",
+    "建行": "建设银行",
+    "CCB": "建设银行",
+    "农业银行": "农业银行",
+    "农行": "农业银行",
+    "ABC": "农业银行",
+    "广发银行": "广发银行",
+    "广发": "广发银行",
+    "广发行": "广发银行",
+    "CGB": "广发银行",
+}
 
 
 def normalize_identifier(identifier_type: str, value: str) -> str:
@@ -26,6 +42,27 @@ def normalize_identifier(identifier_type: str, value: str) -> str:
     if identifier_type in {"person_name", "wechat_name"}:
         return text.replace(" ", "")
     return text
+
+
+def normalize_bank_name(value: str) -> str:
+    key = "".join((value or "").strip().upper().split())
+    return _BANK_ALIASES.get(key, key)
+
+
+def normalize_scoped_bank_account(bank_name: str, value: str) -> str:
+    account = normalize_identifier("bank_acct", value)
+    bank = normalize_bank_name(bank_name)
+    if not account:
+        return ""
+    return f"{bank}{_BANK_ACCOUNT_SEPARATOR}{account}" if bank else account
+
+
+def split_scoped_bank_account(value: str) -> tuple[str, str]:
+    text = (value or "").strip()
+    if _BANK_ACCOUNT_SEPARATOR not in text:
+        return "", normalize_identifier("bank_acct", text)
+    bank, account = text.split(_BANK_ACCOUNT_SEPARATOR, 1)
+    return normalize_bank_name(bank), normalize_identifier("bank_acct", account)
 
 
 def parse_person_names_from_json_field(raw: str) -> list[str]:
@@ -70,4 +107,10 @@ def _split_person_text(text: str) -> list[str]:
     return out
 
 
-__all__ = ["normalize_identifier", "parse_person_names_from_json_field"]
+__all__ = [
+    "normalize_bank_name",
+    "normalize_identifier",
+    "normalize_scoped_bank_account",
+    "parse_person_names_from_json_field",
+    "split_scoped_bank_account",
+]

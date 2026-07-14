@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Input,
@@ -33,9 +33,15 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
   const [progress, setProgress] = useState({ percent: 0, message: "" });
   const importForm = useDataImportForm({ allowOcr: false, compact: false, hideUploadList: true });
 
-  const removeBatch = (sourceType: SourceType) => {
-    importForm.clearFilesForSource(sourceType);
-  };
+  const queuedFiles = useMemo(
+    () => importForm.selectedExcelPayloads.flatMap((payload) =>
+      payload.files.map((file) => ({
+        file,
+        sourceType: payload.values.source_type,
+      }))
+    ),
+    [importForm.selectedExcelPayloads]
+  );
 
   const goNextFromStep1 = () => {
     if (!caseName.trim()) {
@@ -221,14 +227,15 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
               <>
                 <div className="fusion-import-form-wrap fusion-wizard-import-form">{importForm.formElement}</div>
 
-                {importForm.selectedExcelPayloads.length > 0 ? (
+                {queuedFiles.length > 0 ? (
                   <List
                     className="fusion-import-queue fusion-wizard-import-queue"
                     bordered
-                    header={<Text strong className="fusion-wizard-queue-title">待导入（{importForm.selectedExcelPayloads.length}）</Text>}
-                    dataSource={importForm.selectedExcelPayloads}
+                    header={<Text strong className="fusion-wizard-queue-title">待导入（{queuedFiles.length}）</Text>}
+                    dataSource={queuedFiles}
                     renderItem={(item) => (
                       <List.Item
+                        key={`${item.sourceType}-${item.file.name}-${item.file.lastModified}-${item.file.size}`}
                         actions={[
                           <Button
                             key="remove"
@@ -236,14 +243,14 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                             danger
                             icon={<DeleteOutlined />}
                             disabled={running}
-                            onClick={() => removeBatch(item.values.source_type)}
+                            onClick={() => importForm.removeFileForSource(item.sourceType, item.file)}
                           />,
                         ]}
                       >
                         <Space wrap size="middle">
-                          <Tag color="volcano" className="fusion-wizard-queue-tag">{SOURCE_LABELS[item.values.source_type as SourceType]}</Tag>
-                          <Text className="fusion-wizard-queue-name">{item.values.batch_name || item.files[0]?.name}</Text>
-                          <Text type="secondary">{item.files.length} 个文件</Text>
+                          <Tag color="volcano" className="fusion-wizard-queue-tag">{SOURCE_LABELS[item.sourceType as SourceType]}</Tag>
+                          <Text className="fusion-wizard-queue-name">{item.file.name}</Text>
+                          <Text type="secondary">{Math.max(1, Math.ceil(item.file.size / 1024))} KB</Text>
                         </Space>
                       </List.Item>
                     )}

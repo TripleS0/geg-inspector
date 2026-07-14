@@ -132,11 +132,11 @@ class BankTemplateWizardService:
         )
         columns = [str(c).strip() for c in df_norm.columns]
 
-        tpl = match_template(
-            bank_name_hint, sheet_name, sheet_type=template_type, client=self._client
-        )
+        tpl = match_template_by_columns(columns, sheet_type=template_type, client=self._client)
         if tpl is None:
-            tpl = match_template_by_columns(columns, sheet_type=template_type, client=self._client)
+            tpl = match_template(
+                bank_name_hint, sheet_name, sheet_type=template_type, client=self._client
+            )
         suggested: dict[str, str] = {}
         if tpl is not None:
             for std_field, aliases in tpl.field_map.items():

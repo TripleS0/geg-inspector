@@ -41,6 +41,39 @@ export interface BankRecordsResponse {
   description: string;
 }
 
+export interface BankPersonIdentity {
+  person_name: string;
+  id_no: string;
+  bank_count: number;
+  account_count: number;
+  account_nos: string[];
+  unknown_bank?: string;
+  unknown_acct_no?: string;
+  unknown_source_name?: string;
+}
+
+export interface BankPersonFundGroup {
+  bank_type: string;
+  counterparty_name: string;
+  counterparty_account: string;
+  counterparty_category: "company_platform" | "individual_or_unknown";
+  txn_count: number;
+  income_count: number;
+  expense_count: number;
+  income_total: number;
+  expense_total: number;
+  net_amount: number;
+}
+
+export interface BankPersonFundsResponse {
+  identity: { person_name: string; id_no: string };
+  accounts: Array<{ bank_type: string; acct_no: string }>;
+  summary: Record<string, number>;
+  groups: BankPersonFundGroup[];
+  organization_groups: BankPersonFundGroup[];
+  records: Array<Record<string, string>>;
+}
+
 export interface ModuleParams {
   large_amount_threshold?: number;
   top_n?: number;
@@ -926,6 +959,20 @@ export const api = {
       body: JSON.stringify(filters),
     }),
 
+  bankPersonIdentities: (batchId: string) =>
+    http<{ items: BankPersonIdentity[] }>(
+      `/api/bank/${encodeURIComponent(batchId)}/person-identities`
+    ),
+
+  bankPersonFunds: (batchId: string, personName: string, idNo: string) =>
+    http<BankPersonFundsResponse>(
+      `/api/bank/${encodeURIComponent(batchId)}/person-funds`,
+      {
+        method: "POST",
+        body: JSON.stringify({ person_name: personName, id_no: idNo }),
+      }
+    ),
+
   exportBankRecords: async (batchId: string, filters: BankFilter, fileName?: string) => {
     const res = await fetch(`${API_BASE}/api/bank/${encodeURIComponent(batchId)}/records/export`, {
       method: "POST",
@@ -1022,6 +1069,32 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows, columns, file_name: fileName, sheet_name: sheetName }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
+
+  exportSheetsToExcel: async (
+    sheets: Array<{
+      sheet_name: string;
+      rows: Record<string, unknown>[];
+      columns: Array<{ key: string; title: string }>;
+    }>,
+    fileName: string
+  ) => {
+    const res = await fetch(`${API_BASE}/api/export/rows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sheets, file_name: fileName }),
     });
     if (!res.ok) {
       let detail = res.statusText;

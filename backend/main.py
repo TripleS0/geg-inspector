@@ -1,6 +1,7 @@
 """FastAPI backend for the offline desktop Web system."""
 
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -137,6 +139,11 @@ class BankRecordsExportRequest(BankFilterRequest):
     """Export current bank filtered records."""
 
     file_name: str = ""
+
+
+class BankPersonFundsRequest(BaseModel):
+    person_name: str
+    id_no: str
 
 
 class CommercialAnalysisFilterRequest(BaseModel):
@@ -380,6 +387,14 @@ class ExportRowsColumn(BaseModel):
     title: str
 
 
+class ExportRowsSheet(BaseModel):
+    """One worksheet for a generic Excel export."""
+
+    sheet_name: str = "明细"
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[ExportRowsColumn] = Field(default_factory=list)
+
+
 class ExportRowsPayload(BaseModel):
     """Generic rows-to-Excel export payload."""
 
@@ -387,6 +402,7 @@ class ExportRowsPayload(BaseModel):
     columns: List[ExportRowsColumn] = Field(default_factory=list)
     file_name: str = "records"
     sheet_name: str = "明细"
+    sheets: List[ExportRowsSheet] = Field(default_factory=list)
 
 
 class QichachaIngestProfileBody(BaseModel):
@@ -653,6 +669,16 @@ def rows_to_excel_bytes(rows: List[Dict[str, Any]], columns: List[ExportRowsColu
 
     if not rows:
         raise HTTPException(status_code=400, detail="没有可导出的数据")
+    return sheets_to_excel_bytes([
+        ExportRowsSheet(sheet_name=sheet_name, rows=rows, columns=columns),
+    ])
+
+
+def sheets_to_excel_bytes(sheets: List[ExportRowsSheet]) -> bytes:
+    """Build a multi-sheet Excel workbook from UI table rows."""
+
+    if not sheets or not any(sheet.rows for sheet in sheets):
+        raise HTTPException(status_code=400, detail="没有可导出的数据")
     try:
         import pandas as pd
     except ImportError as err:  # pragma: no cover
@@ -660,25 +686,37 @@ def rows_to_excel_bytes(rows: List[Dict[str, Any]], columns: List[ExportRowsColu
 
     from io import BytesIO
 
-    active_columns = columns or [
-        ExportRowsColumn(key=key, title=key)
-        for key in rows[0].keys()
-    ]
-    data = [
-        {col.title: row.get(col.key, "") for col in active_columns}
-        for row in rows
-    ]
-    safe_sheet = (sheet_name or "明细").strip()[:31] or "明细"
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        pd.DataFrame(data).to_excel(writer, index=False, sheet_name=safe_sheet)
-        ws = writer.sheets.get(safe_sheet)
-        if ws is not None:
-            ws.freeze_panes = "A2"
-            for col in ws.columns:
-                letter = col[0].column_letter
-                max_len = max(len(str(cell.value or "")) for cell in col[:80])
-                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 36)
+        used_names: set[str] = set()
+        for index, sheet in enumerate(sheets, start=1):
+            active_columns = sheet.columns or [
+                ExportRowsColumn(key=key, title=key)
+                for key in (sheet.rows[0].keys() if sheet.rows else [])
+            ]
+            data = [
+                {col.title: row.get(col.key, "") for col in active_columns}
+                for row in sheet.rows
+            ]
+            base_name = (sheet.sheet_name or f"明细{index}").strip()[:31] or f"明细{index}"
+            safe_sheet = base_name
+            suffix = 2
+            while safe_sheet in used_names:
+                safe_sheet = f"{base_name[:28]}_{suffix}"
+                suffix += 1
+            used_names.add(safe_sheet)
+            pd.DataFrame(data, columns=[col.title for col in active_columns]).to_excel(
+                writer,
+                index=False,
+                sheet_name=safe_sheet,
+            )
+            ws = writer.sheets.get(safe_sheet)
+            if ws is not None:
+                ws.freeze_panes = "A2"
+                for col in ws.columns:
+                    letter = col[0].column_letter
+                    max_len = max(len(str(cell.value or "")) for cell in col[:80])
+                    ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 36)
     return buffer.getvalue()
 
 
@@ -1411,6 +1449,17 @@ def create_app() -> FastAPI:
     def bank_records(batch_id: str, payload: BankFilterRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().query_records(batch_id, payload.to_filters()).to_dict()
 
+    @app.get("/api/bank/{batch_id}/person-identities")
+    def bank_person_identities(batch_id: str) -> Dict[str, Any]:
+        return {"items": BankAnalysisUseCase().person_identities(batch_id)}
+
+    @app.post("/api/bank/{batch_id}/person-funds")
+    def bank_person_funds(batch_id: str, payload: BankPersonFundsRequest) -> Dict[str, Any]:
+        try:
+            return BankAnalysisUseCase().person_fund_summary(batch_id, payload.person_name, payload.id_no)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
     @app.post("/api/bank/{batch_id}/records/export")
     def export_bank_records(batch_id: str, payload: BankRecordsExportRequest) -> Response:
         result = BankAnalysisUseCase().query_records(batch_id, payload.to_filters())
@@ -1559,12 +1608,23 @@ def create_app() -> FastAPI:
 
     @app.post("/api/export/rows")
     def export_rows(payload: ExportRowsPayload) -> Response:
-        blob = rows_to_excel_bytes(payload.rows, payload.columns, payload.sheet_name)
+        blob = (
+            sheets_to_excel_bytes(payload.sheets)
+            if payload.sheets
+            else rows_to_excel_bytes(payload.rows, payload.columns, payload.sheet_name)
+        )
         safe_name = re.sub(r'[\\/:*?"<>|\s]+', "_", (payload.file_name or "records").strip())[:80] or "records"
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_name).strip("._") or "records"
+        encoded_name = quote(f"{safe_name}.xlsx", safe="")
         return Response(
             content=blob,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'},
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}.xlsx"; '
+                    f"filename*=UTF-8''{encoded_name}"
+                )
+            },
         )
 
     @app.post("/api/qichacha/basic-details/query")

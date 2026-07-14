@@ -67,6 +67,12 @@ class BankAnalysisUseCase:
         description = self._query.render_description(active_filters, summary)
         return BankRecordsResult(records=records, summary=summary, description=description)
 
+    def person_identities(self, batch_id: str) -> list[dict[str, object]]:
+        return self._query.list_person_identities(batch_id)
+
+    def person_fund_summary(self, batch_id: str, person_name: str, id_no: str) -> dict[str, object]:
+        return self._query.summarize_person_funds(batch_id, person_name, id_no)
+
     def run_module(
         self,
         batch_id: str,

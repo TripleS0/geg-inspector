@@ -48,7 +48,7 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         for required in {"meta_schema_version", "ana_task", "std_bank_txn", "cfg_risk_rule", "meta_ocr_job"}:
             self.assertIn(required, names)
         version_rows = self.client.query_all("SELECT version FROM meta_schema_version ORDER BY version;")
-        self.assertEqual([row[0] for row in version_rows], [1, 2, 3])
+        self.assertEqual([row[0] for row in version_rows], [1, 2, 3, 4])
 
     def test_dataset_use_case_lists_seeded_batches(self) -> None:
         self.client.execute(
@@ -228,6 +228,92 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(len(result.records), 1)
         self.assertEqual(result.records[0]["bank_type"], "建设银行")
+
+    def test_bank_analysis_quick_query_matches_all_supported_record_fields(self) -> None:
+        self.client.execute(
+            "INSERT INTO std_bank_txn(import_batch_id, bank_name, source_sheet, template_fingerprint, source_name,"
+            " acct_no, person_name, txn_time, txn_amount, currency, txn_direction,"
+            " counterparty_name, counterparty_account, summary, remark, balance, raw_payload)"
+            " VALUES ('batch-quick-fields', '工商银行', 's', 'fp', '交易流水',"
+            " '62220011234', '张三', '2026-02-01 10:00:00', '300.00', 'CNY', '支出',"
+            " '李四', '955881234', '货款转账', '柜面办理', '1300.00', '{}');"
+        )
+        query = BankAnalysisUseCase(self.client)
+        for keyword in ("工商银行", "622200", "支出", "李四", "95588", "货款", "柜面"):
+            with self.subTest(keyword=keyword):
+                result = query.query_records(
+                    "batch-quick-fields",
+                    BankQueryFilters(quick_query=keyword),
+                )
+                self.assertEqual(len(result.records), 1)
+
+    def test_bank_quick_query_uses_owner_bank_not_counterparty_name(self) -> None:
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_txn(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                acct_no, txn_time, txn_amount, currency, txn_direction,
+                counterparty_name, raw_payload
+            ) VALUES ('batch-owner-bank', ?, 's', 'fp', ?, '2026-02-01 10:00:00',
+                      '100.00', 'CNY', '收入', ?, '{}');
+            """,
+            [
+                ("建设银行", "CCB-001", "李四"),
+                ("农业银行", "ABC-001", "建设银行"),
+            ],
+        )
+        result = BankAnalysisUseCase(self.client).query_records(
+            "batch-owner-bank",
+            BankQueryFilters(quick_query="建设银行"),
+        )
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0]["bank_type"], "建设银行")
+
+    def test_person_fund_summary_groups_cross_bank_accounts_by_identity(self) -> None:
+        batch_id = "batch-person-funds"
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, id_no, raw_payload
+            ) VALUES (?, ?, '开户信息', 'fp', ?, ?, ?, '{}');
+            """,
+            [
+                (batch_id, "工商银行", "李艾", "ICBC-001", "440106199001010011"),
+                (batch_id, "建设银行", "李艾", "CCB-002", "440106199001010011"),
+                (batch_id, "建设银行", "李艾", "ICBC-001", "440106198801010022"),
+                (batch_id, "工商银行", "张三", "CP-1", "440106199002020022"),
+            ],
+        )
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_txn(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                acct_no, txn_time, txn_amount, txn_direction,
+                counterparty_name, counterparty_account, raw_payload
+            ) VALUES (?, ?, '交易明细', 'fp', ?, '2026-07-01 10:00:00', ?, ?, ?, ?, '{}');
+            """,
+            [
+                (batch_id, "工商银行", "ICBC-001", "100.00", "支出", "张三", "CP-1"),
+                (batch_id, "建设银行", "CCB-002", "200.00", "支出", "京东商城有限公司", "CP-2"),
+                (batch_id, "建设银行", "ICBC-001", "900.00", "支出", "其他人", "CP-9"),
+            ],
+        )
+
+        uc = BankAnalysisUseCase(self.client)
+        options = uc.person_identities(batch_id)
+        self.assertEqual(len(options), 3)
+        li_ai = next(item for item in options if item["person_name"] == "李艾" and item["id_no"] == "440106199001010011")
+        self.assertIn("ICBC-001", li_ai["account_nos"])
+        result = uc.person_fund_summary(batch_id, "李艾", "440106199001010011")
+        self.assertEqual(result["summary"]["bank_count"], 2)
+        self.assertEqual(result["summary"]["account_count"], 2)
+        self.assertEqual(result["summary"]["out_total"], 300.0)
+        self.assertEqual({row["bank_type"] for row in result["groups"]}, {"工商银行", "建设银行"})
+        self.assertNotIn("其他人", {row["counterparty_name"] for row in result["groups"]})
+        self.assertEqual(result["summary"]["organization_counterparty_count"], 1)
+        self.assertEqual(len(result["organization_groups"]), 1)
+        self.assertEqual(result["organization_groups"][0]["counterparty_category"], "company_platform")
 
     def test_commercial_risk_lists_after_no_run(self) -> None:
         uc = CommercialRiskUseCase(self.client)

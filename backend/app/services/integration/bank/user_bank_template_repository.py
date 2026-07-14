@@ -93,6 +93,8 @@ def record_to_bank_template(rec: UserBankTemplateRecord) -> BankTemplate:
         signature_columns=sig,
         user_template_id=rec.template_id,
         template_type=rec.template_type,
+        direction_rules=dict(rec.direction_rules),
+        datetime_patterns=rec.datetime_patterns,
     )
 
 

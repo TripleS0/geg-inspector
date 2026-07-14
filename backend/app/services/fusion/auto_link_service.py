@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.services.fusion.identifier_discovery_service import IdentifierDiscoveryService
-from app.services.fusion.identifier_norm import normalize_identifier
+from app.services.fusion.identifier_norm import normalize_identifier, normalize_scoped_bank_account
 from app.services.fusion.person_link_service import PersonLinkService
 from app.services.shared.db.sqlite_client import SqliteClient
 
@@ -39,6 +39,7 @@ class AutoLinkService:
         rows = self._client.query_all("SELECT 1 FROM std_case WHERE case_id=? LIMIT 1;", (case_id,))
         if not rows:
             raise ValueError("案件不存在")
+        self._remove_unverified_bank_name_persons(case_id)
         if rediscover:
             self._discovery.discover(case_id)
 
@@ -47,10 +48,17 @@ class AutoLinkService:
         if not candidates:
             return result
 
-        name_display = self._collect_person_names(candidates)
-        name_to_person = self._ensure_persons(case_id, name_display, result)
-
         linked_ids: set[int] = set()
+        ambiguous_bank_names = self._link_bank_account_identities(
+            case_id, candidates, linked_ids, result
+        )
+        name_display = self._collect_person_names(candidates)
+        name_to_person = self._ensure_persons(
+            case_id,
+            name_display,
+            result,
+            blocked_name_norms=ambiguous_bank_names,
+        )
 
         # Pass 1: same source record bundle (须先于姓名直配，避免 anchor 已被移出 pending)
         groups = self._group_by_source_ref(candidates)
@@ -162,6 +170,9 @@ class AutoLinkService:
             itype = str(cand["identifier_type"])
             if itype not in _NAME_TYPES:
                 continue
+            source_ref = cand.get("source_ref") or {}
+            if source_ref.get("table") == "std_bank_txn" and source_ref.get("role") == "counterparty":
+                continue
             display = str(cand["display_value"]).strip()
             if not self._is_probable_person_name(display):
                 continue
@@ -172,24 +183,166 @@ class AutoLinkService:
                 out[norm] = display
         return out
 
+    def _remove_unverified_bank_name_persons(self, case_id: int) -> None:
+        """Remove legacy persons created only from bank transaction names."""
+        for person in self._person_links.list_persons(case_id):
+            if person.role_tag != "unknown" or not person.links:
+                continue
+            if not all(
+                str(link.get("identifier_type")) == "person_name"
+                and str(link.get("source_type")) == "bank"
+                and (link.get("source_ref") or {}).get("table") == "std_bank_txn"
+                for link in person.links
+            ):
+                continue
+            for link in person.links:
+                self._client.execute(
+                    """
+                    UPDATE rel_identifier_candidate
+                    SET review_status='pending', updated_at=CURRENT_TIMESTAMP
+                    WHERE case_id=? AND identifier_type='person_name' AND identifier_norm=?;
+                    """,
+                    (case_id, str(link.get("identifier_norm") or "")),
+                )
+            self._person_links.delete_person(case_id, person.person_id)
+
     def _ensure_persons(
         self,
         case_id: int,
         name_display: dict[str, str],
         result: AutoLinkResult,
+        *,
+        blocked_name_norms: set[str] | None = None,
     ) -> dict[str, int]:
-        existing = {
-            normalize_identifier("person_name", p.display_name): p.person_id
-            for p in self._person_links.list_persons(case_id)
-        }
+        blocked = blocked_name_norms or set()
+        existing: dict[str, int] = {}
+        duplicate_names: set[str] = set()
+        for person in self._person_links.list_persons(case_id):
+            norm = normalize_identifier("person_name", person.display_name)
+            if not norm:
+                continue
+            if norm in existing:
+                duplicate_names.add(norm)
+                existing.pop(norm, None)
+            elif norm not in duplicate_names:
+                existing[norm] = person.person_id
         name_to_person = dict(existing)
         for norm, display in sorted(name_display.items()):
+            if norm in blocked or norm in duplicate_names:
+                continue
             if norm in name_to_person:
                 continue
             person = self._person_links.create_person(case_id, display_name=display, role_tag="unknown")
             name_to_person[norm] = person.person_id
             result.persons_created += 1
         return name_to_person
+
+    def _link_bank_account_identities(
+        self,
+        case_id: int,
+        candidates: list[dict],
+        linked_ids: set[int],
+        result: AutoLinkResult,
+    ) -> set[str]:
+        """Group bank accounts by exact normalized name and ID across all banks."""
+        rows = self._client.query_all(
+            """
+            SELECT a.bank_name, a.person_name, a.id_no, a.acct_no, a.mobile
+            FROM std_bank_account a
+            JOIN rel_case_batch b ON b.import_batch_id=a.import_batch_id
+            WHERE b.case_id=?
+              AND a.person_name IS NOT NULL AND TRIM(a.person_name)<>''
+              AND a.id_no IS NOT NULL AND TRIM(a.id_no)<>'';
+            """,
+            (case_id,),
+        )
+        groups: dict[tuple[str, str], dict[str, object]] = {}
+        identifier_owners: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        name_groups: dict[str, set[tuple[str, str]]] = {}
+        for bank_name, person_name, id_no, acct_no, mobile in rows:
+            display_name = str(person_name or "").strip()
+            name_norm = normalize_identifier("person_name", display_name)
+            id_norm = normalize_identifier("id_no", str(id_no or ""))
+            if not name_norm or not id_norm:
+                continue
+            group_key = (name_norm, id_norm)
+            group = groups.setdefault(
+                group_key,
+                {"display_name": display_name, "identifiers": set()},
+            )
+            identifiers = group["identifiers"]
+            assert isinstance(identifiers, set)
+            for identifier_type, value, explicit_norm in (
+                ("id_no", str(id_no or ""), None),
+                (
+                    "bank_acct",
+                    str(acct_no or ""),
+                    normalize_scoped_bank_account(str(bank_name or ""), str(acct_no or "")),
+                ),
+                ("phone", str(mobile or ""), None),
+            ):
+                norm = explicit_norm or normalize_identifier(identifier_type, value)
+                if not norm:
+                    continue
+                identifier = (identifier_type, norm)
+                identifiers.add(identifier)
+                identifier_owners.setdefault(identifier, set()).add(group_key)
+            name_groups.setdefault(name_norm, set()).add(group_key)
+
+        if not groups:
+            return set()
+
+        candidate_by_identifier = {
+            (str(cand["identifier_type"]), str(cand["identifier_norm"])): cand
+            for cand in candidates
+        }
+        existing_by_group: dict[tuple[str, str], int] = {}
+        for person in self._person_links.list_persons(case_id):
+            name_norm = normalize_identifier("person_name", person.display_name)
+            for link in person.links:
+                if str(link["identifier_type"]) != "id_no":
+                    continue
+                id_norm = str(link["identifier_norm"])
+                key = (name_norm, id_norm)
+                if key in groups:
+                    existing_by_group.setdefault(key, person.person_id)
+
+        person_by_group: dict[tuple[str, str], int] = {}
+        for group_key, group in groups.items():
+            person_id = existing_by_group.get(group_key)
+            if person_id is None:
+                person = self._person_links.create_person(
+                    case_id,
+                    display_name=str(group["display_name"]),
+                    role_tag="unknown",
+                )
+                person_id = person.person_id
+                result.persons_created += 1
+            person_by_group[group_key] = person_id
+
+        for group_key, group in groups.items():
+            person_id = person_by_group[group_key]
+            identifiers = group["identifiers"]
+            assert isinstance(identifiers, set)
+            for identifier in identifiers:
+                if len(identifier_owners.get(identifier, set())) != 1:
+                    continue
+                cand = candidate_by_identifier.get(identifier)
+                if cand is None or cand["candidate_id"] in linked_ids:
+                    continue
+                if self._try_link(case_id, cand["candidate_id"], person_id, linked_ids):
+                    result.links_created += 1
+
+            name_norm = group_key[0]
+            if len(name_groups.get(name_norm, set())) != 1:
+                continue
+            name_candidate = candidate_by_identifier.get(("person_name", name_norm))
+            if name_candidate is None or name_candidate["candidate_id"] in linked_ids:
+                continue
+            if self._try_link(case_id, name_candidate["candidate_id"], person_id, linked_ids):
+                result.links_created += 1
+
+        return {name for name, identity_groups in name_groups.items() if len(identity_groups) > 1}
 
     def _group_by_source_ref(self, candidates: list[dict]) -> dict[str, list[dict]]:
         groups: dict[str, list[dict]] = {}
@@ -299,10 +452,15 @@ class AutoLinkService:
 
     def _refresh_name_to_person(self, case_id: int, name_to_person: dict[str, int]) -> dict[str, int]:
         refreshed = dict(name_to_person)
+        counts: dict[str, int] = {}
         for person in self._person_links.list_persons(case_id):
             norm = normalize_identifier("person_name", person.display_name)
             if norm:
-                refreshed[norm] = person.person_id
+                counts[norm] = counts.get(norm, 0) + 1
+                if counts[norm] == 1:
+                    refreshed[norm] = person.person_id
+                else:
+                    refreshed.pop(norm, None)
         return refreshed
 
     def _raw_owner_name(self, table: str, raw_id: int) -> str:

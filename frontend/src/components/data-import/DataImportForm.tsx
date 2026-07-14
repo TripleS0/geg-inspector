@@ -154,6 +154,11 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     updateFilesForSource(type, []);
   };
 
+  const removeFileForSource = (type: SourceType, file: File) => {
+    const nextFiles = filesBySource[type].filter((item) => item.originFileObj !== file);
+    updateFilesForSource(type, nextFiles);
+  };
+
   const reset = () => {
     form.resetFields();
     setFilesBySource(createFileMap());
@@ -353,6 +358,7 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     getAllPayloads,
     reset,
     clearFilesForSource,
+    removeFileForSource,
     sourceType,
     bankImportMode,
     isOcrMode,

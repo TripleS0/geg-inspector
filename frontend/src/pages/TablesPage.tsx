@@ -101,12 +101,13 @@ function TablesPage() {
       const title = displayColumnTitle(col);
       const isNarrow =
         /单号|编号|id|时间|日期|类别|策略|状态|金额|数量/i.test(title) && title.length <= 12;
+      const width = isNarrow ? 116 : 180;
       return {
         title,
         dataIndex: idx,
         key: col,
-        width: isNarrow ? 112 : 160,
-        minWidth: isNarrow ? 96 : 140,
+        width,
+        ellipsis: { showTitle: false },
         render: (val: unknown) => <PreviewCell value={val} />,
       };
     });
@@ -226,7 +227,8 @@ function TablesPage() {
               rowKey="__key"
               size="small"
               loading={loading}
-              scroll={{ x: "max-content", y: tableBodyHeight }}
+              tableLayout="fixed"
+              scroll={{ x: Math.max(960, columns.reduce((total, column) => total + Number(column.width || 180), 0)), y: tableBodyHeight }}
               columns={columns}
               dataSource={dataSource}
               rowClassName={(record) =>

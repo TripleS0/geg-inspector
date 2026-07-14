@@ -277,8 +277,18 @@ class PersonLinkService:
             (case_id, person_id),
         )
         if display_rows:
-            name = normalize_identifier("person_name", str(display_rows[0][0]))
-            if name:
+            display_name = str(display_rows[0][0])
+            name = normalize_identifier("person_name", display_name)
+            same_name_rows = self._client.query_all(
+                "SELECT display_name FROM std_person WHERE case_id=?;",
+                (case_id,),
+            )
+            same_name_count = sum(
+                1
+                for (other_name,) in same_name_rows
+                if normalize_identifier("person_name", str(other_name or "")) == name
+            )
+            if name and same_name_count == 1:
                 buckets.setdefault("person_name", set()).add(name)
         return buckets
 

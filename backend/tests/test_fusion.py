@@ -262,6 +262,119 @@ class FusionTests(unittest.TestCase):
         types = {l["identifier_type"] for l in wang["links"]}  # type: ignore[union-attr]
         self.assertTrue({"person_name", "bank_acct", "phone"}.issubset(types))
 
+    def test_bank_counterparty_does_not_auto_create_person(self) -> None:
+        batch_id = "batch-bank-counterparty"
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('bank.xlsx', '/tmp/bank.xlsx', 'counterparty-hash', '建设银行', 'bank', ?, 'imported');",
+            (batch_id,),
+        )
+        self.client.execute(
+            """
+            INSERT INTO std_bank_txn(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, txn_time, txn_amount, txn_direction,
+                counterparty_name, counterparty_account, raw_payload
+            ) VALUES (?, '建设银行', '交易明细', 'fp', '张三', 'CCB-001',
+                      '2026-07-01 10:00:00', '88.00', '支出', '京东商城', 'JD-001', '{}');
+            """,
+            (batch_id,),
+        )
+        case = self.case_uc.create_case(case_name="交易对手候选")
+        self.case_uc.bind_batches(case.case_id, [batch_id])
+
+        self.fusion_uc.auto_link(case.case_id, rediscover=True)
+
+        names = {person["display_name"] for person in self.fusion_uc.list_persons(case.case_id)}
+        self.assertIn("张三", names)
+        self.assertNotIn("京东商城", names)
+        pending = self.fusion_uc.list_candidates(case.case_id)
+        self.assertTrue(any(item["display_value"] == "京东商城" for item in pending))
+
+    def test_auto_link_groups_bank_cards_by_name_and_id_across_banks(self) -> None:
+        batch_id = "batch-bank-identities"
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('banks.xlsx', '/tmp/banks.xlsx', 'identity-hash', '多银行', 'bank', ?, 'imported');",
+            (batch_id,),
+        )
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, id_no, source_name, raw_payload
+            ) VALUES (?, ?, '开户信息', 'fp', '李**', ?, ?, 'src', '{}');
+            """,
+            [
+                (batch_id, "工商银行", "6222000000000001", "441424********2851"),
+                (batch_id, "建设银行", "6222000000000001", "441424********2851"),
+                (batch_id, "农业银行", "6228480000000003", "440106********1132"),
+            ],
+        )
+        case = self.case_uc.create_case(case_name="同名脱敏人物")
+        self.case_uc.bind_batches(case.case_id, [batch_id])
+
+        self.fusion_uc.auto_link(case.case_id, rediscover=True)
+
+        persons = [p for p in self.fusion_uc.list_persons(case.case_id) if p["display_name"] == "李**"]
+        self.assertEqual(len(persons), 2)
+        cards_by_id = {
+            next(link["identifier_norm"] for link in person["links"] if link["identifier_type"] == "id_no"):
+            {
+                link["identifier_norm"]
+                for link in person["links"]
+                if link["identifier_type"] == "bank_acct"
+            }
+            for person in persons
+        }
+        self.assertEqual(
+            cards_by_id["441424********2851"],
+            {"工商银行|6222000000000001", "建设银行|6222000000000001"},
+        )
+        self.assertEqual(cards_by_id["440106********1132"], {"农业银行|6228480000000003"})
+
+    def test_person_cockpit_does_not_mix_same_card_number_between_banks(self) -> None:
+        batch_id = "batch-bank-card-collision"
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('collision.xlsx', '/tmp/collision.xlsx', 'collision-hash', '多银行', 'bank', ?, 'imported');",
+            (batch_id,),
+        )
+        shared_card = "6222000000009999"
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, id_no, source_name, raw_payload
+            ) VALUES (?, ?, '开户信息', 'fp', ?, ?, ?, 'src', '{}');
+            """,
+            [
+                (batch_id, "工商银行", "李**", shared_card, "441424********2851"),
+                (batch_id, "建设银行", "王**", shared_card, "440106********1132"),
+            ],
+        )
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_txn(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, txn_time, txn_amount, txn_direction, raw_payload
+            ) VALUES (?, ?, '交易明细', 'fp', '', ?, '2026-07-01 10:00:00', ?, '收入', '{}');
+            """,
+            [
+                (batch_id, "工商银行", shared_card, "100.00"),
+                (batch_id, "建设银行", shared_card, "200.00"),
+            ],
+        )
+        case = self.case_uc.create_case(case_name="跨行同卡号隔离")
+        self.case_uc.bind_batches(case.case_id, [batch_id])
+        self.fusion_uc.auto_link(case.case_id, rediscover=True)
+
+        persons = {p["display_name"]: p for p in self.fusion_uc.list_persons(case.case_id)}
+        first = self.fusion_uc.person_cockpit(case.case_id, persons["李**"]["person_id"])
+        second = self.fusion_uc.person_cockpit(case.case_id, persons["王**"]["person_id"])
+        self.assertEqual([row["amount"] for row in first["records_by_type"]["bank_txn"]], [100.0])
+        self.assertEqual([row["amount"] for row in second["records_by_type"]["bank_txn"]], [200.0])
+
     def test_auto_link_enterprise_to_legal_person(self) -> None:
         batch_ent = "batch-ent-legal"
         batch_bank = "batch-bank-legal"

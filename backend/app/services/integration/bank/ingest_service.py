@@ -14,6 +14,7 @@ from app.services.shared.db.sqlite_client import SqliteClient
 from app.services.integration.bank.template_library import (
     infer_bank_name,
     infer_bank_name_by_columns,
+    infer_file_purpose,
     infer_sheet_purpose,
     infer_sheet_purpose_by_columns,
     match_template,
@@ -73,10 +74,13 @@ class BankIngestService:
 
             file_hash = self._hash_file(path)
             effective_bank_name = infer_bank_name(path.name, list(workbook.keys()), fallback=bank_name, client=self._client)
+            file_type = infer_file_purpose(path.name)
             file_id = self._insert_file_record(import_batch_id, path, file_hash, effective_bank_name, source_type)
 
             for sheet_name, dataframe in workbook.items():
-                sheet_type_early = infer_sheet_purpose(str(sheet_name))
+                # The browser preserves the uploaded filename. It is a useful
+                # signal for files such as "工商银行开户信息.xlsx" whose Sheet is generic.
+                sheet_type_early = file_type or infer_sheet_purpose(f"{path.name} {sheet_name}")
                 tpl_early = match_template(
                     effective_bank_name,
                     str(sheet_name),
@@ -101,9 +105,11 @@ class BankIngestService:
                 dataframe = dataframe.fillna("")
                 raw_columns = [str(col).strip() for col in dataframe.columns]
                 sheet_bank_name = infer_bank_name(
-                    path.name, [sheet_name], fallback=effective_bank_name, client=self._client
+                    f"{path.name} {sheet_name}", [sheet_name], fallback=effective_bank_name, client=self._client
                 )
-                st_col = infer_sheet_purpose_by_columns(raw_columns, fallback=sheet_type_early)
+                # An explicit filename convention wins; otherwise use the
+                # actual columns to distinguish account profiles and records.
+                st_col = file_type or infer_sheet_purpose_by_columns(raw_columns, fallback=sheet_type_early)
                 sheet_bank_name = infer_bank_name_by_columns(
                     raw_columns, fallback=sheet_bank_name, sheet_type=st_col, client=self._client
                 )

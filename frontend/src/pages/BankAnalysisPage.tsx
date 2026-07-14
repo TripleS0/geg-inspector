@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import { Button, Card, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tabs, Tag, Typography, message } from "antd";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button, Card, Col, Collapse, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from "antd";
 import { DownloadOutlined, DownOutlined, SearchOutlined, UpOutlined, WarningOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
-import { api, BankFilter, BankRecordsResponse, BatchInfo, batchLabel, ModuleParams } from "../api";
+import {
+  api,
+  BankFilter,
+  BankPersonFundGroup,
+  BankPersonFundsResponse,
+  BankPersonIdentity,
+  BankRecordsResponse,
+  BatchInfo,
+  batchLabel,
+  ModuleParams,
+} from "../api";
 import { chartPair, chartPalette } from "../theme";
 import { AnalysisDateTimeFilterFields, AnalysisDateTimeFormFields, serializeAnalysisDateTimeFilters } from "../components/AnalysisDateTimeFilters";
 
@@ -12,6 +22,30 @@ type BankFilterForm = BankFilter & AnalysisDateTimeFormFields;
 const { Title, Paragraph } = Typography;
 
 type BankRecord = Record<string, string>;
+
+interface PersonFundBankRow {
+  bank_type: string;
+  account_count: number;
+  counterparty_count: number;
+  txn_count: number;
+  income_total: number;
+  expense_total: number;
+  turnover: number;
+  net_amount: number;
+}
+
+interface PersonFundCounterpartyRow {
+  counterparty_name: string;
+  counterparty_account: string;
+  counterparty_category: "company_platform" | "individual_or_unknown";
+  bank_names: string;
+  bank_count: number;
+  txn_count: number;
+  income_total: number;
+  expense_total: number;
+  turnover: number;
+  net_amount: number;
+}
 
 function toAmount(row: BankRecord) {
   return Math.abs(Number(String(row.amount || "0").replace(/,/g, "")) || 0);
@@ -28,6 +62,29 @@ function rowMatchesKeyword(row: Record<string, unknown>, keyword: string, keys: 
   return tokens.every((token) => haystack.includes(token));
 }
 
+function isBankExportNotice(row: BankRecord) {
+  const text = Object.values(row).join(" ");
+  const noticeMarkers = ["数据截至", "非实时数据", "生产系统为准", "综合查控平台"];
+  return noticeMarkers.filter((marker) => text.includes(marker)).length >= 2;
+}
+
+function selectedOwnerBank(filters: BankFilter) {
+  if (filters.bank_type) return filters.bank_type;
+  const aliases: Array<[string, string[]]> = [
+    ["工商银行", ["工商银行", "工行", "icbc", "工商"]],
+    ["农业银行", ["农业银行", "农行", "abc", "农业"]],
+    ["建设银行", ["建设银行", "建行", "ccb", "建设"]],
+    ["广发银行", ["广发银行", "广发行", "广发", "cgb"]],
+    ["光大银行", ["光大银行", "光大", "ceb"]],
+  ];
+  const tokens = String(filters.quick_query || "").toLowerCase().trim().split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    const match = aliases.find(([, values]) => values.some((value) => token === value.toLowerCase() || value.toLowerCase().includes(token)));
+    if (match) return match[0];
+  }
+  return "";
+}
+
 function signedAmount(row: BankRecord) {
   const amount = toAmount(row);
   return isExpenseDirection(row) ? -amount : amount;
@@ -42,6 +99,24 @@ function moneyText(value: number) {
   if (value >= 100000000) return `${(value / 100000000).toFixed(2)}亿`;
   if (value >= 10000) return `${(value / 10000).toFixed(2)}万`;
   return value.toFixed(2);
+}
+
+function identityOptionValue(item: Pick<BankPersonIdentity, "person_name" | "id_no">) {
+  return JSON.stringify([item.person_name, item.id_no]);
+}
+
+function identityOptionLabel(item: BankPersonIdentity) {
+  if (item.id_no.startsWith("__unknown__|")) {
+    const detail = item.unknown_acct_no || `未识别账号 · ${item.unknown_source_name || ""}`;
+    return `${item.person_name} · ${item.unknown_bank || "未知银行"} · ${detail}`;
+  }
+  const id = item.id_no || "";
+  const maskedId = id.includes("*") || id.length <= 10 ? id : `${id.slice(0, 6)}******${id.slice(-4)}`;
+  return `${item.person_name} · ${maskedId} · ${item.bank_count} 家银行 / ${item.account_count} 个账号或卡号`;
+}
+
+function identitySearchText(item: BankPersonIdentity) {
+  return [item.person_name, item.id_no, ...(item.account_nos || [])].join(" ");
 }
 
 function isIncomeDirection(row: BankRecord) {
@@ -97,6 +172,14 @@ function BankAnalysisPage() {
   const [moduleSortMode, setModuleSortMode] = useState<"default" | "abs_desc">("default");
   const [recordKeyword, setRecordKeyword] = useState("");
   const [moduleKeyword, setModuleKeyword] = useState("");
+  const [personIdentities, setPersonIdentities] = useState<BankPersonIdentity[]>([]);
+  const [selectedPersonIdentity, setSelectedPersonIdentity] = useState("");
+  const [personFunds, setPersonFunds] = useState<BankPersonFundsResponse | null>(null);
+  const [personFundsLoading, setPersonFundsLoading] = useState(false);
+  const [selectedFundBank, setSelectedFundBank] = useState("all");
+  const [organizationKeyword, setOrganizationKeyword] = useState("");
+  const [activeOwnerBank, setActiveOwnerBank] = useState("");
+  const queryRequestIdRef = useRef(0);
 
   useEffect(() => {
     void (async () => {
@@ -115,24 +198,51 @@ function BankAnalysisPage() {
 
   useEffect(() => {
     if (!batchId) return;
+    queryRequestIdRef.current += 1;
     setSearchParams({ batch: batchId });
     setModuleResult(null);
     void api.bankFilterOptions(batchId).then(setFilterOptions).catch(() => setFilterOptions({}));
+    void api.bankPersonIdentities(batchId).then((data) => {
+      setPersonIdentities(data.items);
+      setSelectedPersonIdentity(data.items[0] ? identityOptionValue(data.items[0]) : "");
+      setPersonFunds(null);
+      setSelectedFundBank("all");
+      setOrganizationKeyword("");
+    }).catch(() => {
+      setPersonIdentities([]);
+      setSelectedPersonIdentity("");
+      setPersonFunds(null);
+      setSelectedFundBank("all");
+      setOrganizationKeyword("");
+    });
     void runQuery();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchId]);
 
   const runQuery = async () => {
     if (!batchId) return;
+    const requestId = ++queryRequestIdRef.current;
     setLoading(true);
     try {
       const values = await filter.validateFields();
       const data = await api.bankRecords(batchId, serializeAnalysisDateTimeFilters(values));
-      setRecords(data);
+      if (requestId !== queryRequestIdRef.current) return;
+      const ownerBank = selectedOwnerBank(values);
+      setActiveOwnerBank(ownerBank);
+      setRecords({
+        ...data,
+        records: data.records
+          .filter((row) => !isBankExportNotice(row))
+          .filter((row) => !ownerBank || String(row.bank_type || "").includes(ownerBank)),
+      });
     } catch (err) {
-      message.error((err as Error).message);
+      if (requestId === queryRequestIdRef.current) {
+        message.error((err as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === queryRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -467,6 +577,19 @@ function BankAnalysisPage() {
   const activeModuleName = MODULES.find((m) => m.id === activeModule)?.name || "固定分析";
 
   const recordColumns = useMemo(() => {
+    const widths: Record<string, number> = {
+      txn_time: 170,
+      bank_type: 120,
+      person_name: 110,
+      acct_no: 190,
+      txn_direction: 90,
+      amount: 120,
+      balance: 120,
+      counterparty_name: 140,
+      counterparty_account: 180,
+      txn_desc: 190,
+      remark: 190,
+    };
     const keys = [
       ["txn_time", "时间"],
       ["bank_type", "银行"],
@@ -484,28 +607,39 @@ function BankAnalysisPage() {
       title,
       dataIndex,
       key: dataIndex,
-      ellipsis: true,
+      width: widths[dataIndex],
+      ellipsis: { showTitle: false },
       sorter:
         dataIndex === "amount" || dataIndex === "balance"
           ? (a: BankRecord, b: BankRecord) => toNumeric(a[dataIndex]) - toNumeric(b[dataIndex])
           : dataIndex === "txn_time"
             ? (a: BankRecord, b: BankRecord) => String(a.txn_time || "").localeCompare(String(b.txn_time || ""))
             : undefined,
-      render:
-        dataIndex === "txn_direction"
-          ? (value: string) => {
-              const income = String(value || "").includes("收入") || String(value || "").includes("转入");
-              return <Tag color={income ? "green" : "red"}>{value || "-"}</Tag>;
-            }
-          : dataIndex === "amount" || dataIndex === "balance"
-            ? (value: string) => <span className="analysis-table-amount">{value || "-"}</span>
-            : undefined,
+      defaultSortOrder: dataIndex === "txn_time" ? "descend" as const : undefined,
+      render: (value: string, row: BankRecord) => {
+        const displayValue = dataIndex === "acct_no"
+          ? String(row.acct_no || value || "")
+          : String(value || "");
+        if (dataIndex === "txn_direction") {
+          const income = displayValue.includes("收入") || displayValue.includes("转入");
+          return <Tag color={income ? "green" : "red"}>{displayValue || "-"}</Tag>;
+        }
+        return (
+          <Tooltip title={displayValue || "-"} mouseEnterDelay={0.35}>
+            <span className={dataIndex === "amount" || dataIndex === "balance" ? "analysis-table-amount analysis-cell-ellipsis" : "analysis-cell-ellipsis"}>
+              {displayValue || "-"}
+            </span>
+          </Tooltip>
+        );
+      },
     }));
   }, []);
 
   const filteredMatchedRecords = useMemo(
     () =>
       ((records?.records || []) as BankRecord[])
+        .filter((row) => !isBankExportNotice(row))
+        .filter((row) => !activeOwnerBank || String(row.bank_type || "") === activeOwnerBank)
         .filter((row) =>
           rowMatchesKeyword(row, recordKeyword, [
             "bank_type",
@@ -518,9 +652,8 @@ function BankAnalysisPage() {
             "txn_desc",
             "remark",
           ])
-        )
-        .slice(0, 200),
-    [recordKeyword, records]
+        ),
+    [activeOwnerBank, recordKeyword, records]
   );
 
   const filteredModuleHits = useMemo(
@@ -548,9 +681,313 @@ function BankAnalysisPage() {
     setDetailRows(rows);
   };
 
+  const runQueryAfterSelect = () => {
+    // Let Ant Design write the selected value into the form before reading it.
+    window.setTimeout(() => void runQuery(), 0);
+  };
+
+  const runPersonFunds = async (identityValue = selectedPersonIdentity) => {
+    if (!batchId || !identityValue) return;
+    setPersonFundsLoading(true);
+    try {
+      const [personName, idNo] = JSON.parse(identityValue) as [string, string];
+      const data = await api.bankPersonFunds(batchId, personName, idNo);
+      setPersonFunds(data);
+      setSelectedFundBank("all");
+      setOrganizationKeyword("");
+    } catch (err) {
+      message.error((err as Error).message || "人物资金汇总失败");
+    } finally {
+      setPersonFundsLoading(false);
+    }
+  };
+
+  const personFundColumns = useMemo(
+    () => [
+      { title: "银行", dataIndex: "bank_type", key: "bank_type", width: 130 },
+      { title: "交易对手", dataIndex: "counterparty_name", key: "counterparty_name", width: 160, ellipsis: true },
+      { title: "对手账号", dataIndex: "counterparty_account", key: "counterparty_account", width: 190, ellipsis: true },
+      { title: "交易笔数", dataIndex: "txn_count", key: "txn_count", width: 100, sorter: (a: BankPersonFundGroup, b: BankPersonFundGroup) => a.txn_count - b.txn_count },
+      { title: "转入合计", dataIndex: "income_total", key: "income_total", width: 130, sorter: (a: BankPersonFundGroup, b: BankPersonFundGroup) => a.income_total - b.income_total, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "转出合计", dataIndex: "expense_total", key: "expense_total", width: 130, defaultSortOrder: "descend" as const, sorter: (a: BankPersonFundGroup, b: BankPersonFundGroup) => a.expense_total - b.expense_total, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "净额", dataIndex: "net_amount", key: "net_amount", width: 130, sorter: (a: BankPersonFundGroup, b: BankPersonFundGroup) => a.net_amount - b.net_amount, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      {
+        title: "操作",
+        key: "actions",
+        width: 90,
+        render: (_: unknown, row: BankPersonFundGroup) => (
+          <Button
+            type="link"
+            onClick={() => openDetail(
+              `${row.bank_type} · ${row.counterparty_name}`,
+              ((personFunds?.records || []) as BankRecord[]).filter((record) =>
+                record.bank_type === row.bank_type
+                && (record.counterparty_name || "未识别对手") === row.counterparty_name
+                && (record.counterparty_account || "") === row.counterparty_account
+              )
+            )}
+          >
+            查看明细
+          </Button>
+        ),
+      },
+    ],
+    [personFunds]
+  );
+
+  const personFundBankRows = useMemo<PersonFundBankRow[]>(() => {
+    if (!personFunds) return [];
+    const rows = new Map<string, PersonFundBankRow>();
+    personFunds.groups.forEach((group) => {
+      const item = rows.get(group.bank_type) || {
+        bank_type: group.bank_type,
+        account_count: personFunds.accounts.filter((account) => account.bank_type === group.bank_type).length,
+        counterparty_count: 0,
+        txn_count: 0,
+        income_total: 0,
+        expense_total: 0,
+        turnover: 0,
+        net_amount: 0,
+      };
+      item.counterparty_count += 1;
+      item.txn_count += group.txn_count;
+      item.income_total += group.income_total;
+      item.expense_total += group.expense_total;
+      item.turnover = item.income_total + item.expense_total;
+      item.net_amount = item.income_total - item.expense_total;
+      rows.set(group.bank_type, item);
+    });
+    return Array.from(rows.values()).sort((a, b) => b.turnover - a.turnover);
+  }, [personFunds]);
+
+  const scopedPersonFundGroups = useMemo(
+    () => (personFunds?.groups || []).filter((group) =>
+      selectedFundBank === "all" || group.bank_type === selectedFundBank
+    ),
+    [personFunds, selectedFundBank]
+  );
+
+  const personFundCounterpartyRows = useMemo<PersonFundCounterpartyRow[]>(() => {
+    if (!personFunds) return [];
+    const rows = new Map<string, PersonFundCounterpartyRow & { banks: Set<string> }>();
+    scopedPersonFundGroups.forEach((group) => {
+      const key = `${group.counterparty_name}|${group.counterparty_account}`;
+      const item = rows.get(key) || {
+        counterparty_name: group.counterparty_name,
+        counterparty_account: group.counterparty_account,
+        counterparty_category: group.counterparty_category,
+        bank_names: "",
+        bank_count: 0,
+        txn_count: 0,
+        income_total: 0,
+        expense_total: 0,
+        turnover: 0,
+        net_amount: 0,
+        banks: new Set<string>(),
+      };
+      item.banks.add(group.bank_type);
+      item.txn_count += group.txn_count;
+      item.income_total += group.income_total;
+      item.expense_total += group.expense_total;
+      item.turnover = item.income_total + item.expense_total;
+      item.net_amount = item.income_total - item.expense_total;
+      item.bank_count = item.banks.size;
+      item.bank_names = Array.from(item.banks).join("、");
+      rows.set(key, item);
+    });
+    return Array.from(rows.values()).sort((a, b) => b.turnover - a.turnover);
+  }, [personFunds, scopedPersonFundGroups]);
+
+  const individualCounterpartyRows = useMemo(
+    () => personFundCounterpartyRows.filter((row) => row.counterparty_category !== "company_platform"),
+    [personFundCounterpartyRows]
+  );
+
+  const platformCounterpartyRows = useMemo(
+    () => personFundCounterpartyRows.filter((row) => row.counterparty_category === "company_platform"),
+    [personFundCounterpartyRows]
+  );
+
+  const organizationCounterpartyRows = useMemo(
+    () => platformCounterpartyRows.filter((row) =>
+      rowMatchesKeyword(row as unknown as Record<string, unknown>, organizationKeyword, [
+        "counterparty_name", "counterparty_account", "bank_names",
+      ])
+    ),
+    [organizationKeyword, platformCounterpartyRows]
+  );
+
+  const personFundBankColumns = useMemo(
+    () => [
+      { title: "银行", dataIndex: "bank_type", key: "bank_type", width: 130 },
+      { title: "账号/卡号", dataIndex: "account_count", key: "account_count", width: 100 },
+      { title: "对手数", dataIndex: "counterparty_count", key: "counterparty_count", width: 90 },
+      { title: "笔数", dataIndex: "txn_count", key: "txn_count", width: 80, sorter: (a: PersonFundBankRow, b: PersonFundBankRow) => a.txn_count - b.txn_count },
+      { title: "交易总额", dataIndex: "turnover", key: "turnover", width: 120, defaultSortOrder: "descend" as const, sorter: (a: PersonFundBankRow, b: PersonFundBankRow) => a.turnover - b.turnover, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "转入", dataIndex: "income_total", key: "income_total", width: 110, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "转出", dataIndex: "expense_total", key: "expense_total", width: 110, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "净额", dataIndex: "net_amount", key: "net_amount", width: 110, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+    ],
+    []
+  );
+
+  const personFundCounterpartyColumns = useMemo(
+    () => [
+      { title: "交易对手", dataIndex: "counterparty_name", key: "counterparty_name", width: 140, ellipsis: true },
+      { title: "对手账号", dataIndex: "counterparty_account", key: "counterparty_account", width: 170, ellipsis: true },
+      { title: "涉及银行", dataIndex: "bank_names", key: "bank_names", width: 170, ellipsis: true },
+      { title: "笔数", dataIndex: "txn_count", key: "txn_count", width: 80, sorter: (a: PersonFundCounterpartyRow, b: PersonFundCounterpartyRow) => a.txn_count - b.txn_count },
+      { title: "往来总额", dataIndex: "turnover", key: "turnover", width: 120, defaultSortOrder: "descend" as const, sorter: (a: PersonFundCounterpartyRow, b: PersonFundCounterpartyRow) => a.turnover - b.turnover, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "转入", dataIndex: "income_total", key: "income_total", width: 110, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      { title: "转出", dataIndex: "expense_total", key: "expense_total", width: 110, render: (value: number) => <span className="analysis-table-amount">{value.toFixed(2)}</span> },
+      {
+        title: "操作",
+        key: "actions",
+        width: 90,
+        render: (_: unknown, row: PersonFundCounterpartyRow) => (
+          <Button
+            type="link"
+            onClick={() => openDetail(
+              `交易对手 · ${row.counterparty_name}`,
+              ((personFunds?.records || []) as BankRecord[]).filter((record) =>
+                (selectedFundBank === "all" || record.bank_type === selectedFundBank)
+                &&
+                (record.counterparty_name || "未识别对手") === row.counterparty_name
+                && (record.counterparty_account || "") === row.counterparty_account
+              )
+            )}
+          >
+            查看明细
+          </Button>
+        ),
+      },
+    ],
+    [personFunds, selectedFundBank]
+  );
+
+  const displayedPersonFundBankRows = useMemo(
+    () => selectedFundBank === "all"
+      ? personFundBankRows
+      : personFundBankRows.filter((row) => row.bank_type === selectedFundBank),
+    [personFundBankRows, selectedFundBank]
+  );
+
+  const personFundBankOption = useMemo(() => ({
+    color: chartPalette,
+    tooltip: { trigger: "item", valueFormatter: (value: number) => `${Number(value).toFixed(2)} 元` },
+    legend: { bottom: 0, type: "scroll" },
+    series: [
+      {
+        name: "交易总额",
+        type: "pie",
+        radius: ["42%", "70%"],
+        avoidLabelOverlap: true,
+        label: { formatter: "{b}\n{d}%" },
+        data: displayedPersonFundBankRows.map((row) => ({ name: row.bank_type, value: row.turnover })),
+      },
+    ],
+  }), [displayedPersonFundBankRows]);
+
+  const personFundDirectionOption = useMemo(() => {
+    const incomeTotal = scopedPersonFundGroups.reduce((total, group) => total + group.income_total, 0);
+    const expenseTotal = scopedPersonFundGroups.reduce((total, group) => total + group.expense_total, 0);
+    return {
+      color: [chartPair.primary, chartPair.secondary],
+      tooltip: {
+        trigger: "item",
+        valueFormatter: (value: number) => `${Number(value).toFixed(2)} 元`,
+      },
+      legend: { bottom: 0 },
+      series: [
+        {
+          name: "收支金额",
+          type: "pie",
+          radius: ["45%", "70%"],
+          label: { formatter: "{b}\n{d}%" },
+          data: [
+            { name: "转入", value: incomeTotal },
+            { name: "转出", value: expenseTotal },
+          ],
+        },
+      ],
+    };
+  }, [scopedPersonFundGroups]);
+
+  const personFundCounterpartyOption = useMemo(() => {
+    const top = individualCounterpartyRows.slice(0, 10).reverse();
+    return {
+      color: [chartPair.primary],
+      tooltip: { trigger: "axis" },
+      grid: { top: 12, left: 22, right: 24, bottom: 24, containLabel: true },
+      xAxis: { type: "value" },
+      yAxis: { type: "category", data: top.map((row) => row.counterparty_name), axisLabel: { width: 110, overflow: "truncate" } },
+      series: [{ type: "bar", data: top.map((row) => row.turnover), barMaxWidth: 26 }],
+    };
+  }, [individualCounterpartyRows]);
+
+  const personFundPlatformOption = useMemo(() => {
+    const top = platformCounterpartyRows.slice(0, 10).reverse();
+    return {
+      color: [chartPair.secondary],
+      tooltip: { trigger: "axis" },
+      grid: { top: 12, left: 22, right: 24, bottom: 24, containLabel: true },
+      xAxis: { type: "value" },
+      yAxis: { type: "category", data: top.map((row) => row.counterparty_name), axisLabel: { width: 160, overflow: "truncate" } },
+      series: [{ type: "bar", data: top.map((row) => row.turnover), barMaxWidth: 26 }],
+    };
+  }, [platformCounterpartyRows]);
+
   const onTabChange = (key: string) => {
     if (key === "module" && !moduleResult && !moduleLoading) {
       void runModule("large_inout");
+    }
+    if (key === "person-funds" && selectedPersonIdentity && !personFunds && !personFundsLoading) {
+      void runPersonFunds();
+    }
+  };
+
+  const exportPersonFunds = async () => {
+    if (!personFunds || !personFundCounterpartyRows.length) {
+      message.warning("当前没有可导出的汇总数据");
+      return;
+    }
+    try {
+      const fileBase = `${personFunds.identity.person_name}_人物资金往来`;
+      const columns = [
+        { key: "counterparty_name", title: "交易对手" },
+        { key: "counterparty_account", title: "对手账号" },
+        { key: "bank_names", title: "涉及银行" },
+        { key: "txn_count", title: "共交易笔数" },
+        { key: "turnover", title: "往来总额" },
+        { key: "income_total", title: "转入" },
+        { key: "expense_total", title: "转出" },
+      ];
+      const blob = await api.exportSheetsToExcel(
+        [
+          {
+            sheet_name: "公司平台往来",
+            rows: organizationCounterpartyRows as unknown as Record<string, unknown>[],
+            columns,
+          },
+          {
+            sheet_name: "全部交易对手往来",
+            rows: personFundCounterpartyRows as unknown as Record<string, unknown>[],
+            columns,
+          },
+        ],
+        fileBase
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${fileBase}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      message.success("人物资金往来已导出");
+    } catch (err) {
+      message.error((err as Error).message || "导出失败");
     }
   };
 
@@ -677,22 +1114,22 @@ function BankAnalysisPage() {
                       <Row gutter={12}>
                         <Col span={6}>
                           <Form.Item name="bank_type" label="银行">
-                            <Select allowClear options={(filterOptions.bank_type || []).map((v) => ({ value: v, label: v }))} />
+                            <Select allowClear onChange={runQueryAfterSelect} options={(filterOptions.bank_type || []).map((v) => ({ value: v, label: v }))} />
                           </Form.Item>
                         </Col>
                         <Col span={6}>
                           <Form.Item name="person_name" label="姓名">
-                            <Select allowClear showSearch options={(filterOptions.person_name || []).map((v) => ({ value: v, label: v }))} />
+                            <Select allowClear showSearch onChange={runQueryAfterSelect} options={(filterOptions.person_name || []).map((v) => ({ value: v, label: v }))} />
                           </Form.Item>
                         </Col>
                         <Col span={6}>
                           <Form.Item name="acct_no" label="卡号">
-                            <Select allowClear showSearch options={(filterOptions.acct_no || []).map((v) => ({ value: v, label: v }))} />
+                            <Select allowClear showSearch onChange={runQueryAfterSelect} options={(filterOptions.acct_no || []).map((v) => ({ value: v, label: v }))} />
                           </Form.Item>
                         </Col>
                         <Col span={6}>
                           <Form.Item name="counterparty_name" label="对手姓名">
-                            <Select allowClear showSearch options={(filterOptions.counterparty_name || []).map((v) => ({ value: v, label: v }))} />
+                            <Select allowClear showSearch onChange={runQueryAfterSelect} options={(filterOptions.counterparty_name || []).map((v) => ({ value: v, label: v }))} />
                           </Form.Item>
                         </Col>
                         <Col span={6}>
@@ -770,7 +1207,7 @@ function BankAnalysisPage() {
                     </Row>
                     <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
                       <div className="bank-section-head analysis-table-toolbar">
-                        <Title level={5} style={{ margin: 0 }}>命中记录（前 200 行）</Title>
+                        <Title level={5} style={{ margin: 0 }}>命中记录（{filteredMatchedRecords.length} 条）</Title>
                         <Space wrap>
                           <Input
                             allowClear
@@ -791,7 +1228,7 @@ function BankAnalysisPage() {
                       </div>
                       <Table
                         className="analysis-data-table"
-                        rowKey={(r) => `${r.txn_time}-${r.acct_no}-${r.amount}-${r.counterparty_account}`}
+                        rowKey={(r, index) => `${index}-${r.bank_type}-${r.data_source}-${r.txn_time}-${r.acct_no}-${r.amount}-${r.counterparty_account}`}
                         size="middle"
                         scroll={{ x: "max-content" }}
                         columns={recordColumns}
@@ -801,6 +1238,181 @@ function BankAnalysisPage() {
                     </div>
                   </>
                 )}
+              </div>
+            ),
+          },
+          {
+            key: "person-funds",
+            label: "人物资金汇总",
+            children: (
+              <div>
+                <div className="bank-section-head analysis-table-toolbar">
+                  <Space wrap>
+                    <Select
+                      showSearch
+                      filterOption={(input, option) => {
+                        const item = option as { label?: string; searchText?: string } | undefined;
+                        const keyword = input.trim();
+                        return !keyword || `${item?.label || ""} ${item?.searchText || ""}`.includes(keyword);
+                      }}
+                      placeholder="选择人物"
+                      style={{ minWidth: 420 }}
+                      value={selectedPersonIdentity || undefined}
+                      options={personIdentities.map((item) => ({
+                        value: identityOptionValue(item),
+                        label: identityOptionLabel(item),
+                        searchText: identitySearchText(item),
+                      }))}
+                      onChange={(value) => {
+                        setSelectedPersonIdentity(value);
+                        setPersonFunds(null);
+                        void runPersonFunds(value);
+                      }}
+                    />
+                    <Button
+                      type="primary"
+                      icon={<SearchOutlined />}
+                      loading={personFundsLoading}
+                      disabled={!selectedPersonIdentity}
+                      onClick={() => void runPersonFunds()}
+                    >
+                      生成汇总
+                    </Button>
+                  </Space>
+                  <Button
+                    icon={<DownloadOutlined />}
+                    disabled={!personFunds?.groups.length}
+                    onClick={() => void exportPersonFunds()}
+                  >
+                    导出Excel
+                  </Button>
+                </div>
+
+                {!personIdentities.length ? (
+                  <Paragraph className="analysis-empty" style={{ marginTop: 24 }}>
+                    当前批次没有同时包含姓名和身份证的开户信息
+                  </Paragraph>
+                ) : null}
+
+                {personFunds ? (
+                  <>
+                    <Row gutter={[12, 12]} className="person-fund-kpi-row" style={{ marginTop: 16 }}>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-primary"><div className="metric-title">涉及银行</div><div className="metric-value">{Number(personFunds.summary.bank_count || 0)}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-primary"><div className="metric-title">关联账号/卡号</div><div className="metric-value">{Number(personFunds.summary.account_count || 0)}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-primary"><div className="metric-title">交易对手</div><div className="metric-value">{personFundCounterpartyRows.length}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-primary"><div className="metric-title">交易笔数</div><div className="metric-value">{Number(personFunds.summary.txn_count || 0)}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi"><div className="metric-title">交易总额</div><div className="metric-value">{moneyText(Number(personFunds.summary.in_total || 0) + Number(personFunds.summary.out_total || 0))}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-income"><div className="metric-title">转入合计</div><div className="metric-value">{moneyText(Number(personFunds.summary.in_total || 0))}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-expense"><div className="metric-title">转出合计</div><div className="metric-value">{moneyText(Number(personFunds.summary.out_total || 0))}</div></div>
+                      </Col>
+                      <Col xs={24} sm={12} lg={6}>
+                        <div className="person-fund-kpi is-net"><div className="metric-title">收支净额</div><div className="metric-value">{moneyText(Number(personFunds.summary.net_amount || 0))}</div></div>
+                      </Col>
+                    </Row>
+
+                    <Collapse
+                      className="person-fund-account-collapse"
+                      style={{ marginTop: 16 }}
+                      items={[
+                        {
+                          key: "accounts",
+                          label: <span>关联账号/卡号 <Tag>{personFunds.accounts.length} 个</Tag></span>,
+                          children: (
+                            <Space wrap>
+                              {personFunds.accounts.map((account) => (
+                                <Tag key={`${account.bank_type}-${account.acct_no}`} className="person-fund-account-tag">
+                                  {account.bank_type} · {account.acct_no}
+                                </Tag>
+                              ))}
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+
+                    <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                      <Col xs={24} xl={12}>
+                        <Card
+                          size="small"
+                          title="各银行交易占比"
+                          extra={personFundBankRows.length > 1 ? (
+                            <Select
+                              size="small"
+                              value={selectedFundBank}
+                              style={{ width: 180 }}
+                              onChange={setSelectedFundBank}
+                              options={[
+                                { value: "all", label: "全部银行" },
+                                ...personFundBankRows.map((row) => ({ value: row.bank_type, label: row.bank_type })),
+                              ]}
+                            />
+                          ) : null}
+                        >
+                          <ReactECharts option={personFundBankOption} style={{ height: 280 }} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} xl={12}>
+                        <Card size="small" title="个人往来金额 Top 10">
+                          <ReactECharts option={personFundCounterpartyOption} style={{ height: 280 }} />
+                        </Card>
+                      </Col>
+                    </Row>
+
+                    <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+                      <Col xs={24} xl={12}>
+                        <Card size="small" title="收支比例">
+                          <ReactECharts option={personFundDirectionOption} style={{ height: 280 }} />
+                        </Card>
+                      </Col>
+                      <Col xs={24} xl={12}>
+                        <Card size="small" title="公司/平台往来金额 Top 10">
+                          {platformCounterpartyRows.length ? (
+                            <ReactECharts option={personFundPlatformOption} style={{ height: 280 }} />
+                          ) : (
+                            <Paragraph className="analysis-empty" style={{ margin: 0 }}>暂无公司/平台往来数据</Paragraph>
+                          )}
+                        </Card>
+                      </Col>
+                    </Row>
+
+                    <Collapse
+                      className="person-fund-detail-collapse"
+                      style={{ marginTop: 16 }}
+                      items={[
+                        {
+                          key: "organization",
+                          label: <span>公司/平台往来 <Tag>{organizationCounterpartyRows.length} 个</Tag></span>,
+                          children: (
+                            <>
+                              <Input allowClear prefix={<SearchOutlined />} placeholder="筛选公司、平台或账号" value={organizationKeyword} onChange={(event) => setOrganizationKeyword(event.target.value)} style={{ width: 240, marginBottom: 12 }} />
+                              <Table className="analysis-data-table" rowKey={(row) => `organization-${row.counterparty_name}-${row.counterparty_account}`} size="middle" scroll={{ x: "max-content" }} columns={personFundCounterpartyColumns} dataSource={organizationCounterpartyRows} pagination={{ pageSize: 20 }} />
+                            </>
+                          ),
+                        },
+                        {
+                          key: "counterparties",
+                          label: <span>全部交易对手往来 <Tag>{personFundCounterpartyRows.length} 个</Tag></span>,
+                          children: (
+                            <Table className="analysis-data-table" rowKey={(row) => `${row.counterparty_name}-${row.counterparty_account}`} size="middle" scroll={{ x: "max-content" }} columns={personFundCounterpartyColumns} dataSource={personFundCounterpartyRows} pagination={{ pageSize: 20 }} />
+                          ),
+                        },
+                      ]}
+                    />
+                  </>
+                ) : null}
               </div>
             ),
           },
