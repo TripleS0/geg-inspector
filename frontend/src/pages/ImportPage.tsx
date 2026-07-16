@@ -72,7 +72,7 @@ function ImportPage() {
       setResultLogs([]);
       const logs: string[] = [];
       for (let index = 0; index < payloads.length; index += 1) {
-        const { values, files } = payloads[index];
+        const { values, files, sheetAssignments } = payloads[index];
         const startPercent = Math.round((index / payloads.length) * 100);
         const endPercent = Math.round(((index + 1) / payloads.length) * 100);
         setProgress({
@@ -83,7 +83,8 @@ function ImportPage() {
           values.source_type,
           files,
           values.bank_name || "默认来源",
-          values.batch_name
+          values.batch_name,
+          sheetAssignments
         );
         const status = await pollTask(task_id, (t) =>
           setProgress({

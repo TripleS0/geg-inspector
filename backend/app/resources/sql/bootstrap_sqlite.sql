@@ -1,9 +1,20 @@
+CREATE TABLE IF NOT EXISTS meta_bank_catalog (
+    bank_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS meta_bank_files (
     file_id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_name TEXT NOT NULL,
     file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     bank_name TEXT NOT NULL,
+    bank_id TEXT,
     source_type TEXT NOT NULL DEFAULT 'bank',
     import_batch_id TEXT NOT NULL,
     imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -19,6 +30,9 @@ CREATE TABLE IF NOT EXISTS meta_bank_sheets (
     source_type TEXT NOT NULL DEFAULT 'bank',
     raw_table_name TEXT NOT NULL,
     rows_imported INTEGER NOT NULL DEFAULT 0,
+    selected_template_id TEXT NOT NULL DEFAULT '',
+    template_type TEXT NOT NULL DEFAULT 'txn_detail',
+    template_snapshot_json TEXT NOT NULL DEFAULT '{}',
     imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -56,6 +70,7 @@ CREATE TABLE IF NOT EXISTS meta_user_bank_template (
     display_name TEXT NOT NULL,
     template_type TEXT NOT NULL,
     bank_display_name TEXT NOT NULL,
+    bank_id TEXT,
     bank_keywords_json TEXT NOT NULL,
     sheet_keywords_json TEXT NOT NULL,
     field_map_json TEXT NOT NULL,
@@ -396,6 +411,9 @@ CREATE INDEX IF NOT EXISTS idx_cfg_fusion_model_case ON cfg_fusion_model(case_id
 
 INSERT OR IGNORE INTO meta_schema_version (version, description)
 VALUES (4, 'Fusion model config per case for event management');
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (5, 'Bank catalog, file ownership and per-Sheet template snapshots');
 
 INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version) VALUES
 ('R001', '围标疑似', 1, 1.0, '{"min_shared_inquiries":3,"min_companies_together":3,"note":"同一批项目中多家企业高频共同参标"}', 1),

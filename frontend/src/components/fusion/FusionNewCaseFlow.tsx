@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Button,
+  Checkbox,
   Input,
   List,
   Progress,
@@ -32,6 +33,10 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ percent: 0, message: "" });
   const importForm = useDataImportForm({ allowOcr: false, compact: false, hideUploadList: true });
+  const queueRef = useRef<HTMLDivElement>(null);
+  const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const dragBaseSelectionRef = useRef<string[]>([]);
+  const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
   const queuedFiles = useMemo(
     () => importForm.selectedExcelPayloads.flatMap((payload) =>
@@ -42,6 +47,45 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
     ),
     [importForm.selectedExcelPayloads]
   );
+
+  const updateDragSelection = (clientX: number, clientY: number) => {
+    const root = queueRef.current;
+    const origin = dragOriginRef.current;
+    if (!root || !origin) return;
+    const rootRect = root.getBoundingClientRect();
+    const left = Math.min(origin.x, clientX);
+    const right = Math.max(origin.x, clientX);
+    const top = Math.min(origin.y, clientY);
+    const bottom = Math.max(origin.y, clientY);
+    setSelectionBox({ left: left - rootRect.left, top: top - rootRect.top, width: right - left, height: bottom - top });
+    const hitNames = Array.from(root.querySelectorAll<HTMLElement>("[data-bank-file-name]"))
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return left <= rect.right && right >= rect.left && top <= rect.bottom && bottom >= rect.top;
+      })
+      .map((element) => element.dataset.bankFileName || "")
+      .filter(Boolean);
+    importForm.replaceBankFileSelection([...dragBaseSelectionRef.current, ...hitNames]);
+  };
+
+  const startQueueSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button, input, a, .ant-select, .ant-checkbox-wrapper")) return;
+    if (!target.closest("[data-bank-file-name], .ant-list-items")) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragOriginRef.current = { x: event.clientX, y: event.clientY };
+    dragBaseSelectionRef.current = event.ctrlKey || event.metaKey ? importForm.selectedBankFiles : [];
+    updateDragSelection(event.clientX, event.clientY);
+  };
+
+  const finishQueueSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragOriginRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    dragOriginRef.current = null;
+    setSelectionBox(null);
+  };
 
   const goNextFromStep1 = () => {
     if (!caseName.trim()) {
@@ -228,14 +272,36 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                 <div className="fusion-import-form-wrap fusion-wizard-import-form">{importForm.formElement}</div>
 
                 {queuedFiles.length > 0 ? (
+                  <div
+                    ref={queueRef}
+                    style={{ position: "relative", userSelect: selectionBox ? "none" : undefined }}
+                    onPointerDown={startQueueSelection}
+                    onPointerMove={(event) => {
+                      if (dragOriginRef.current) updateDragSelection(event.clientX, event.clientY);
+                    }}
+                    onPointerUp={finishQueueSelection}
+                    onPointerCancel={finishQueueSelection}
+                  >
                   <List
                     className="fusion-import-queue fusion-wizard-import-queue"
                     bordered
-                    header={<Text strong className="fusion-wizard-queue-title">待导入（{queuedFiles.length}）</Text>}
+                    header={
+                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Space>
+                          <Text strong className="fusion-wizard-queue-title">待导入（{queuedFiles.length}）</Text>
+                          {importForm.selectedBankFiles.length ? <Tag color="processing">已选 {importForm.selectedBankFiles.length} 个银行文件</Tag> : null}
+                        </Space>
+                        {queuedFiles.some((item) => item.sourceType === "bank") ? (
+                          <div onPointerDown={(event) => event.stopPropagation()}>{importForm.bankBatchToolbar}</div>
+                        ) : null}
+                      </Space>
+                    }
                     dataSource={queuedFiles}
                     renderItem={(item) => (
                       <List.Item
                         key={`${item.sourceType}-${item.file.name}-${item.file.lastModified}-${item.file.size}`}
+                        data-bank-file-name={item.sourceType === "bank" ? item.file.name : undefined}
+                        style={item.sourceType === "bank" && importForm.selectedBankFiles.includes(item.file.name) ? { background: "#fff5f0" } : undefined}
                         actions={[
                           <Button
                             key="remove"
@@ -248,13 +314,45 @@ function FusionNewCaseFlow({ onComplete }: FusionNewCaseFlowProps) {
                         ]}
                       >
                         <Space wrap size="middle">
+                          {item.sourceType === "bank" ? (
+                            <Checkbox
+                              checked={importForm.selectedBankFiles.includes(item.file.name)}
+                              onChange={(event) => importForm.toggleBankFileSelection(item.file.name, event.target.checked)}
+                            />
+                          ) : null}
                           <Tag color="volcano" className="fusion-wizard-queue-tag">{SOURCE_LABELS[item.sourceType as SourceType]}</Tag>
                           <Text className="fusion-wizard-queue-name">{item.file.name}</Text>
                           <Text type="secondary">{Math.max(1, Math.ceil(item.file.size / 1024))} KB</Text>
+                          {item.sourceType === "bank" && importForm.bankAssignmentSummaries[item.file.name] ? (
+                            <>
+                              <Tag>{importForm.bankAssignmentSummaries[item.file.name].bankName}</Tag>
+                              {importForm.bankAssignmentSummaries[item.file.name].sheetCount === 0 && importForm.bankAssignmentSummaries[item.file.name].hasPresetTemplate ? (
+                                <Tag color="success">模板已预设</Tag>
+                              ) : (
+                                <Tag color={importForm.bankAssignmentSummaries[item.file.name].confirmedTemplates === importForm.bankAssignmentSummaries[item.file.name].sheetCount ? "success" : "warning"}>
+                                  模板 {importForm.bankAssignmentSummaries[item.file.name].confirmedTemplates}/{importForm.bankAssignmentSummaries[item.file.name].sheetCount}
+                                </Tag>
+                              )}
+                            </>
+                          ) : null}
                         </Space>
                       </List.Item>
                     )}
                   />
+                  {selectionBox ? (
+                    <div style={{
+                      position: "absolute",
+                      pointerEvents: "none",
+                      zIndex: 5,
+                      left: selectionBox.left,
+                      top: selectionBox.top,
+                      width: selectionBox.width,
+                      height: selectionBox.height,
+                      border: "1px solid #d94832",
+                      background: "rgba(217, 72, 50, 0.1)",
+                    }} />
+                  ) : null}
+                  </div>
                 ) : null}
               </>
             )}

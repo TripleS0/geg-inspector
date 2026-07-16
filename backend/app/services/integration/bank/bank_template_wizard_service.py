@@ -9,9 +9,14 @@ from app.services.integration.bank.ingest_service import BankIngestService
 from app.services.integration.bank.mapping_service import BankMappingService
 from app.services.integration.bank.template_library import (
     find_column,
+    infer_bank_name,
+    infer_file_purpose,
+    infer_sheet_purpose,
+    infer_sheet_purpose_by_columns,
     match_template,
     match_template_by_columns,
 )
+from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 
 STD_FIELDS_TXN = frozenset(
@@ -88,6 +93,51 @@ class BankTemplateWizardService:
         path = Path(file_path)
         with pd.ExcelFile(path) as xl:
             return [str(x) for x in xl.sheet_names]
+
+    def preview_import(self, file_path: Path) -> dict[str, Any]:
+        """Inspect all Sheets and recommend, but never finalize, bank/template choices."""
+        try:
+            import pandas as pd
+        except ImportError as err:
+            raise RuntimeError("缺少 pandas") from err
+        path = Path(file_path)
+        workbook = self._ingest._read_workbook_fallback(path, pd)
+        inferred_name = infer_bank_name(path.name, [], fallback="", client=self._client)
+        bank = BankCatalogRepository(self._client).get_by_name(inferred_name) if inferred_name else None
+        file_type = infer_file_purpose(path.name)
+        sheets: list[dict[str, Any]] = []
+        for sheet_name, raw_df in workbook.items():
+            normalized, header_row = self._ingest._normalize_sheet_dataframe(raw_df, pd)
+            columns = [str(col).strip() for col in normalized.columns]
+            sheet_type = file_type or infer_sheet_purpose_by_columns(
+                columns, fallback=infer_sheet_purpose(str(sheet_name))
+            )
+            template = None
+            if bank is not None:
+                by_name = match_template(bank.display_name, str(sheet_name), sheet_type=sheet_type, client=self._client)
+                by_columns = match_template_by_columns(columns, sheet_type=sheet_type, client=self._client)
+                if by_columns is not None and by_columns.bank_display_name == bank.display_name:
+                    template = by_columns
+                elif by_name is not None:
+                    template = by_name
+            else:
+                by_columns = match_template_by_columns(columns, sheet_type=sheet_type, client=self._client)
+                if by_columns is not None:
+                    template = by_columns
+                    bank = BankCatalogRepository(self._client).get_by_name(by_columns.bank_display_name)
+            sheets.append({
+                "sheet_name": str(sheet_name),
+                "template_type": sheet_type,
+                "header_row_0based": header_row,
+                "headers": columns[:16],
+                "suggested_template_id": template.template_id if template else "",
+            })
+        return {
+            "file_name": path.name,
+            "suggested_bank_id": bank.bank_id if bank else "",
+            "suggested_bank_name": bank.display_name if bank else "",
+            "sheets": sheets,
+        }
 
     def analyze(
         self,
@@ -188,6 +238,8 @@ class BankTemplateWizardService:
             "header_row_candidates": header_candidates,
             "source_headers": columns,
             "suggested_mapping": suggested,
+            "suggested_template_id": tpl.template_id if tpl is not None else "",
+            "suggested_bank_name": tpl.bank_display_name if tpl is not None else bank_name_hint,
             "direction_distinct_values": direction_distinct,
             "datetime_analysis": {"merged_preview": merged_preview},
             "sample_row_count": int(len(sample)),

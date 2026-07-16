@@ -58,8 +58,9 @@ class BankMappingService:
         self.purge_export_notice_rows(import_batch_id)
         sheet_rows = self._client.query_all(
             """
-            SELECT DISTINCT s.template_fingerprint, s.raw_table_name, s.sheet_name, f.bank_name,
-                   COALESCE(r.template_type, 'txn_detail') AS template_type
+            SELECT s.template_fingerprint, s.raw_table_name, s.sheet_name, f.bank_name,
+                   COALESCE(s.template_type, r.template_type, 'txn_detail') AS template_type,
+                   s.file_id, COALESCE(s.template_snapshot_json, '{}')
             FROM meta_bank_sheets
             s JOIN meta_bank_files f ON f.file_id=s.file_id
               LEFT JOIN meta_schema_registry r ON r.template_fingerprint=s.template_fingerprint
@@ -69,16 +70,20 @@ class BankMappingService:
         )
 
         inserted = 0
-        for template_fingerprint, raw_table_name, sheet_name, bank_name, template_type in sheet_rows:
+        for template_fingerprint, raw_table_name, sheet_name, bank_name, template_type, file_id, snapshot_json in sheet_rows:
             sheet_type = str(template_type or infer_sheet_purpose(str(sheet_name)))
-            self.seed_default_mappings(str(template_fingerprint), str(bank_name), str(sheet_name), sheet_type)
+            snapshot = snapshot_json if isinstance(snapshot_json, dict) else json.loads(str(snapshot_json or "{}"))
+            if not snapshot.get("field_map"):
+                self.seed_default_mappings(str(template_fingerprint), str(bank_name), str(sheet_name), sheet_type)
             if sheet_type == "account_profile":
                 inserted += self._standardize_account_table(
-                    import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name)
+                    import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name),
+                    source_file_id=int(file_id), template_snapshot=snapshot,
                 )
                 continue
             inserted += self._standardize_table(
-                import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name)
+                import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name),
+                source_file_id=int(file_id), template_snapshot=snapshot,
             )
         self._enrich_person_names(import_batch_id)
         self.purge_export_notice_rows(import_batch_id)
@@ -216,27 +221,36 @@ class BankMappingService:
         raw_table_name: str,
         sheet_name: str,
         bank_name: str,
+        source_file_id: int | None = None,
+        template_snapshot: dict[str, Any] | None = None,
     ) -> int:
         """Standardize one template table by mapping rules."""
-        mapping_rows = self._client.query_all(
-            """
-            SELECT raw_field_name, std_field_name
-            FROM meta_field_mapping
-            WHERE template_fingerprint=? AND is_active=1
-            ORDER BY priority ASC;
-            """,
-            (template_fingerprint,),
-        )
+        mapping_rows = [(source, std) for std, source in (template_snapshot or {}).get("field_map", {}).items()]
+        if not mapping_rows:
+            mapping_rows = self._client.query_all(
+                """
+                SELECT raw_field_name, std_field_name
+                FROM meta_field_mapping
+                WHERE template_fingerprint=? AND is_active=1
+                ORDER BY priority ASC;
+                """,
+                (template_fingerprint,),
+            )
         if not mapping_rows:
             return 0
 
+        filter_sql = "import_batch_id=?"
+        filter_params: tuple[Any, ...] = (import_batch_id,)
+        if source_file_id is not None:
+            filter_sql += " AND source_file_id=? AND source_sheet=?"
+            filter_params = (import_batch_id, source_file_id, sheet_name)
         raw_rows = self._client.query_all(
             f"""
             SELECT import_batch_id, bank_name, source_file_id, source_sheet, template_fingerprint, raw_payload
             FROM "{raw_table_name}"
-            WHERE import_batch_id=?;
+            WHERE {filter_sql};
             """,
-            (import_batch_id,),
+            filter_params,
         )
         if not raw_rows:
             return 0
@@ -250,18 +264,18 @@ class BankMappingService:
             schema_json = schema_rows[0][0]
             schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
             schema_columns = [str(col) for col in schema_dict.get("columns", [])]
-        template = match_template(bank_name, sheet_name, sheet_type="txn_detail", client=self._client)
-        if template is None and schema_columns:
+        template = None if template_snapshot else match_template(bank_name, sheet_name, sheet_type="txn_detail", client=self._client)
+        if template is None and schema_columns and not template_snapshot:
             template = match_template_by_columns(
                 schema_columns, sheet_type="txn_detail", client=self._client
             )
         header_bank_name = bank_name
-        if schema_columns:
+        if schema_columns and not template_snapshot:
             header_bank_name = infer_bank_name_by_columns(
                 schema_columns, fallback=bank_name, sheet_type="txn_detail", client=self._client
             )
-        direction_rules: dict[str, str] = dict(template.direction_rules or {}) if template else {}
-        datetime_rules: dict[str, Any] | None = template.datetime_patterns if template else None
+        direction_rules: dict[str, str] = dict((template_snapshot or {}).get("direction_rules") or (template.direction_rules if template else {}) or {})
+        datetime_rules: dict[str, Any] | None = (template_snapshot or {}).get("datetime_patterns") or (template.datetime_patterns if template else None)
         if template is not None and template.user_template_id:
             direction_rules, datetime_rules = UserBankTemplateRepository(self._client).get_transform_rules(
                 template.user_template_id
@@ -382,27 +396,36 @@ class BankMappingService:
         raw_table_name: str,
         sheet_name: str,
         bank_name: str,
+        source_file_id: int | None = None,
+        template_snapshot: dict[str, Any] | None = None,
     ) -> int:
         """Standardize one account profile table into std_bank_account."""
-        mapping_rows = self._client.query_all(
-            """
-            SELECT raw_field_name, std_field_name
-            FROM meta_field_mapping
-            WHERE template_fingerprint=? AND is_active=1
-              AND (template_type='account_profile' OR std_field_name IN ('person_name','acct_no','id_no','mobile','open_date'))
-            ORDER BY priority ASC;
-            """,
-            (template_fingerprint,),
-        )
+        mapping_rows = [(source, std) for std, source in (template_snapshot or {}).get("field_map", {}).items()]
+        if not mapping_rows:
+            mapping_rows = self._client.query_all(
+                """
+                SELECT raw_field_name, std_field_name
+                FROM meta_field_mapping
+                WHERE template_fingerprint=? AND is_active=1
+                  AND (template_type='account_profile' OR std_field_name IN ('person_name','acct_no','id_no','mobile','open_date'))
+                ORDER BY priority ASC;
+                """,
+                (template_fingerprint,),
+            )
         if not mapping_rows:
             return 0
+        filter_sql = "import_batch_id=?"
+        filter_params: tuple[Any, ...] = (import_batch_id,)
+        if source_file_id is not None:
+            filter_sql += " AND source_file_id=? AND source_sheet=?"
+            filter_params = (import_batch_id, source_file_id, sheet_name)
         raw_rows = self._client.query_all(
             f"""
             SELECT import_batch_id, bank_name, source_file_id, source_sheet, template_fingerprint, raw_payload
             FROM "{raw_table_name}"
-            WHERE import_batch_id=?;
+            WHERE {filter_sql};
             """,
-            (import_batch_id,),
+            filter_params,
         )
         if not raw_rows:
             return 0
@@ -415,10 +438,10 @@ class BankMappingService:
             schema_json = schema_rows[0][0]
             schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
             schema_columns = [str(col) for col in schema_dict.get("columns", [])]
-        column_acct_tpl = match_template_by_columns(
+        column_acct_tpl = None if template_snapshot else match_template_by_columns(
             schema_columns, sheet_type="account_profile", client=self._client
         ) if schema_columns else None
-        named_acct_tpl = match_template(
+        named_acct_tpl = None if template_snapshot else match_template(
             bank_name, sheet_name, sheet_type="account_profile", client=self._client
         )
         explicit_bank_key = self._normalize_bank_key(bank_name)
@@ -429,7 +452,7 @@ class BankMappingService:
             acct_tpl = named_acct_tpl
         else:
             acct_tpl = column_acct_tpl or named_acct_tpl
-        dt_rules_acct: dict[str, Any] | None = None
+        dt_rules_acct: dict[str, Any] | None = (template_snapshot or {}).get("datetime_patterns")
         if acct_tpl is not None and acct_tpl.user_template_id:
             _, dt_rules_acct = UserBankTemplateRepository(self._client).get_transform_rules(
                 acct_tpl.user_template_id

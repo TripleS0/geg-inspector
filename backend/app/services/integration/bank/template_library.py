@@ -58,8 +58,24 @@ def list_templates_for_match(client: SqliteClient | None = None) -> tuple[BankTe
     except Exception:
         pass
     merged = tuple(user_templates) + BUILTIN_TEMPLATES
+    try:
+        from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
+
+        catalog = BankCatalogRepository(db)
+        merged = tuple(
+            item for item in merged
+            if (catalog.get_by_name(item.bank_display_name) is not None and catalog.get_by_name(item.bank_display_name).is_active)
+        )
+    except Exception:
+        pass
     _MERGED_TEMPLATE_CACHE[key] = merged
     return merged
+
+
+def get_template_by_id(template_id: str, client: SqliteClient | None = None) -> BankTemplate | None:
+    """Return a built-in or active user template by its stable identifier."""
+    target = (template_id or "").strip()
+    return next((item for item in list_templates_for_match(client) if item.template_id == target), None) if target else None
 
 
 BUILTIN_TEMPLATES: tuple[BankTemplate, ...] = (

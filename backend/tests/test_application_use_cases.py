@@ -48,7 +48,7 @@ class UseCaseEnvironmentTests(unittest.TestCase):
         for required in {"meta_schema_version", "ana_task", "std_bank_txn", "cfg_risk_rule", "meta_ocr_job"}:
             self.assertIn(required, names)
         version_rows = self.client.query_all("SELECT version FROM meta_schema_version ORDER BY version;")
-        self.assertEqual([row[0] for row in version_rows], [1, 2, 3, 4])
+        self.assertEqual([row[0] for row in version_rows], [1, 2, 3, 4, 5])
 
     def test_dataset_use_case_lists_seeded_batches(self) -> None:
         self.client.execute(

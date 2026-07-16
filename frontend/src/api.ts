@@ -480,12 +480,23 @@ export interface QichachaLogItem {
 
 export type BankTemplateType = "account_profile" | "txn_detail";
 
+export interface BankCatalogItem {
+  bank_id: string;
+  display_name: string;
+  aliases: string[];
+  is_builtin: boolean;
+  is_active: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface UserBankTemplate {
   id?: number;
   template_id?: string;
   display_name: string;
   template_type: BankTemplateType;
   bank_display_name: string;
+  bank_id?: string;
   bank_keywords: string[];
   sheet_keywords: string[];
   field_map: Record<string, string[]>;
@@ -496,8 +507,22 @@ export interface UserBankTemplate {
   direction_rules: Record<string, string>;
   datetime_patterns?: Record<string, unknown> | null;
   is_active?: number;
+  is_builtin?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface BankImportPreview {
+  file_name: string;
+  suggested_bank_id: string;
+  suggested_bank_name: string;
+  sheets: Array<{
+    sheet_name: string;
+    template_type: BankTemplateType;
+    header_row_0based: number;
+    headers: string[];
+    suggested_template_id: string;
+  }>;
 }
 
 export interface BankTemplateAnalyzeResult {
@@ -508,6 +533,8 @@ export interface BankTemplateAnalyzeResult {
   header_row_candidates: Array<{ row_0based: number; score: number }>;
   source_headers: string[];
   suggested_mapping: Record<string, string>;
+  suggested_template_id?: string;
+  suggested_bank_name?: string;
   direction_distinct_values: string[];
   datetime_analysis: { merged_preview?: string[] };
   sample_row_count: number;
@@ -845,12 +872,16 @@ export const api = {
     sourceType: "bank" | "commercial" | "enterprise" | "wechat" | "telecom",
     files: File[],
     bankName: string,
-    batchName?: string
+    batchName?: string,
+    sheetAssignments?: Record<string, { bank_id: string; sheets: Record<string, { template_id: string }> }>
   ) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     if (batchName?.trim()) {
       form.append("batch_name", batchName.trim());
+    }
+    if (sheetAssignments && Object.keys(sheetAssignments).length) {
+      form.append("sheet_assignments_json", JSON.stringify(sheetAssignments));
     }
     const url = `${API_BASE}/api/upload/${sourceType}?bank_name=${encodeURIComponent(bankName)}`;
     const res = await fetch(url, { method: "POST", body: form });
@@ -1142,9 +1173,23 @@ export const api = {
 
   listBankTemplates: () => http<{ items: UserBankTemplate[] }>("/api/bank-templates"),
 
+  listBanks: (activeOnly = false) => http<{ items: BankCatalogItem[] }>(`/api/banks?active_only=${activeOnly ? "true" : "false"}`),
+
+  createBank: (body: { display_name: string; aliases?: string[] }) =>
+    http<BankCatalogItem>("/api/banks", { method: "POST", body: JSON.stringify(body) }),
+
+  updateBank: (bankId: string, body: { display_name?: string; aliases?: string[]; is_active?: number }) =>
+    http<BankCatalogItem>(`/api/banks/${encodeURIComponent(bankId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+
   createBankTemplate: (body: UserBankTemplate) =>
     http<UserBankTemplate>("/api/bank-templates", {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateBankTemplate: (templateId: string, body: Partial<UserBankTemplate>) =>
+    http<UserBankTemplate>(`/api/bank-templates/${encodeURIComponent(templateId)}`, {
+      method: "PATCH",
       body: JSON.stringify(body),
     }),
 
@@ -1440,6 +1485,18 @@ export async function listBankTemplateSampleSheets(file: File): Promise<string[]
   }
   const data = (await res.json()) as { sheets?: string[] };
   return data.sheets || [];
+}
+
+export async function previewBankImportFile(file: File): Promise<BankImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample/sheets`, { method: "POST", body: form });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { detail?: string };
+    throw new Error(data.detail || `预览失败（${res.status}）`);
+  }
+  const data = await res.json() as { preview: BankImportPreview };
+  return data.preview;
 }
 
 export async function queryQichachaBasicDetails(params: {

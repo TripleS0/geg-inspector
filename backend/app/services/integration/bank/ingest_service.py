@@ -11,7 +11,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.shared.db.sqlite_client import SqliteClient
+from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
 from app.services.integration.bank.template_library import (
+    BankTemplate,
+    find_column,
+    get_template_by_id,
     infer_bank_name,
     infer_bank_name_by_columns,
     infer_file_purpose,
@@ -40,9 +44,10 @@ class BankIngestService:
         """Initialize service with DB client."""
         self._client = client or SqliteClient()
 
-    def ingest_files(self, file_paths: list[str], bank_name: str, source_type: str = "bank") -> IngestResult:
+    def ingest_files(self, file_paths: list[str], bank_name: str, source_type: str = "bank", sheet_assignments: dict[str, Any] | None = None) -> IngestResult:
         """Ingest multiple files and return aggregated summary."""
         self._ensure_meta_columns()
+        catalog = BankCatalogRepository(self._client)
         try:
             import pandas as pd
         except ImportError as err:
@@ -56,6 +61,9 @@ class BankIngestService:
 
         for file_path in file_paths:
             path = Path(file_path)
+            file_config = (sheet_assignments or {}).get(str(path), {})
+            explicit_format = isinstance(file_config, dict) and "sheets" in file_config
+            file_assignments = file_config.get("sheets", {}) if explicit_format else file_config
             if not path.exists() or not path.is_file():
                 failed_files += 1
                 self._write_log(import_batch_id, file_path, "error", "文件不存在或不可读取")
@@ -73,15 +81,31 @@ class BankIngestService:
                 continue
 
             file_hash = self._hash_file(path)
-            effective_bank_name = infer_bank_name(path.name, list(workbook.keys()), fallback=bank_name, client=self._client)
+            requested_bank_id = str(file_config.get("bank_id") or "").strip() if explicit_format else ""
+            bank_record = catalog.get(requested_bank_id) if requested_bank_id else None
+            if bank_record is None:
+                inferred_name = infer_bank_name(path.name, list(workbook.keys()), fallback=bank_name, client=self._client)
+                bank_record = catalog.get_by_name(inferred_name)
+            if bank_record is None or not bank_record.is_active:
+                raise ValueError(f"文件 {path.name} 尚未确认有效的银行分类")
+            effective_bank_name = bank_record.display_name
             file_type = infer_file_purpose(path.name)
-            file_id = self._insert_file_record(import_batch_id, path, file_hash, effective_bank_name, source_type)
+            file_id = self._insert_file_record(import_batch_id, path, file_hash, effective_bank_name, bank_record.bank_id, source_type)
 
             for sheet_name, dataframe in workbook.items():
+                assignment = file_assignments.get(str(sheet_name), {})
                 # The browser preserves the uploaded filename. It is a useful
                 # signal for files such as "工商银行开户信息.xlsx" whose Sheet is generic.
                 sheet_type_early = file_type or infer_sheet_purpose(f"{path.name} {sheet_name}")
-                tpl_early = match_template(
+                default_template_id = str((
+                    file_config.get("default_account_template_id")
+                    if sheet_type_early == "account_profile"
+                    else file_config.get("default_txn_template_id")
+                ) or "")
+                selected_template = get_template_by_id(
+                    str(assignment.get("template_id") or default_template_id or ""), self._client
+                )
+                tpl_early = selected_template or match_template(
                     effective_bank_name,
                     str(sheet_name),
                     sheet_type=sheet_type_early,
@@ -104,16 +128,29 @@ class BankIngestService:
                 sheets_total += 1
                 dataframe = dataframe.fillna("")
                 raw_columns = [str(col).strip() for col in dataframe.columns]
-                sheet_bank_name = infer_bank_name(
-                    f"{path.name} {sheet_name}", [sheet_name], fallback=effective_bank_name, client=self._client
-                )
+                sheet_bank_name = effective_bank_name
                 # An explicit filename convention wins; otherwise use the
                 # actual columns to distinguish account profiles and records.
                 st_col = file_type or infer_sheet_purpose_by_columns(raw_columns, fallback=sheet_type_early)
-                sheet_bank_name = infer_bank_name_by_columns(
-                    raw_columns, fallback=sheet_bank_name, sheet_type=st_col, client=self._client
+                if not assignment.get("template_id"):
+                    resolved_default_id = str((
+                        file_config.get("default_account_template_id")
+                        if st_col == "account_profile"
+                        else file_config.get("default_txn_template_id")
+                    ) or "")
+                    if resolved_default_id:
+                        selected_template = get_template_by_id(resolved_default_id, self._client)
+                if explicit_format and selected_template is None:
+                    raise ValueError(f"文件 {path.name} 的 Sheet[{sheet_name}] 尚未确认模板")
+                if selected_template is not None and selected_template.bank_display_name != effective_bank_name:
+                    raise ValueError(f"Sheet[{sheet_name}] 选择的模板不属于 {effective_bank_name}")
+                if selected_template is not None:
+                    sheet_bank_name = effective_bank_name
+                    st_col = selected_template.template_type
+                fingerprint = self._build_fingerprint(
+                    sheet_bank_name, source_type, sheet_name, raw_columns,
+                    selected_template.template_id if selected_template else "",
                 )
-                fingerprint = self._build_fingerprint(sheet_bank_name, source_type, sheet_name, raw_columns)
                 raw_table_name, is_new = self._ensure_schema_registry(
                     bank_name=sheet_bank_name,
                     source_type=source_type,
@@ -121,9 +158,12 @@ class BankIngestService:
                     fingerprint=fingerprint,
                     columns=raw_columns,
                     source_path=path,
+                    template_type=st_col,
                 )
                 if is_new:
                     new_templates += 1
+                if selected_template is not None:
+                    self._apply_selected_template_mapping(fingerprint, raw_columns, selected_template)
 
                 inserted_rows = self._insert_raw_rows(
                     raw_table_name=raw_table_name,
@@ -143,6 +183,9 @@ class BankIngestService:
                     raw_table_name=raw_table_name,
                     rows_imported=inserted_rows,
                     source_type=source_type,
+                    selected_template_id=selected_template.template_id if selected_template else "",
+                    template_type=st_col,
+                    template_snapshot=self._template_snapshot(selected_template, raw_columns, bank_record.bank_id),
                 )
                 self._write_log(
                     import_batch_id,
@@ -338,6 +381,7 @@ class BankIngestService:
         source_type: str,
         sheet_name: str,
         columns: list[str],
+        template_id: str = "",
     ) -> str:
         """Build template fingerprint from bank/sheet/columns."""
         payload = json.dumps(
@@ -346,6 +390,7 @@ class BankIngestService:
                 "source_type": source_type.strip().lower(),
                 "sheet": sheet_name.strip().lower(),
                 "columns": [col.strip().lower() for col in columns],
+                "template_id": template_id,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -360,9 +405,10 @@ class BankIngestService:
         fingerprint: str,
         columns: list[str],
         source_path: Path,
+        template_type: str | None = None,
     ) -> tuple[str, bool]:
         """Ensure registry row exists and return raw table name."""
-        template_type = infer_sheet_purpose(sheet_name)
+        template_type = template_type or infer_sheet_purpose(sheet_name)
         template_type = infer_sheet_purpose_by_columns(columns, fallback=template_type)
         existing = self._client.query_all(
             "SELECT raw_table_name FROM meta_schema_registry WHERE template_fingerprint=? LIMIT 1;",
@@ -401,6 +447,38 @@ class BankIngestService:
             self._client.execute(
                 "ALTER TABLE meta_schema_registry ADD COLUMN template_type TEXT NOT NULL DEFAULT 'txn_detail';"
             )
+        sheet_info = self._client.query_all("PRAGMA table_info(meta_bank_sheets);")
+        sheet_names = {str(row[1]) for row in sheet_info}
+        if "selected_template_id" not in sheet_names:
+            self._client.execute("ALTER TABLE meta_bank_sheets ADD COLUMN selected_template_id TEXT NOT NULL DEFAULT '';" )
+        if "template_type" not in sheet_names:
+            self._client.execute("ALTER TABLE meta_bank_sheets ADD COLUMN template_type TEXT NOT NULL DEFAULT 'txn_detail';")
+        if "template_snapshot_json" not in sheet_names:
+            self._client.execute("ALTER TABLE meta_bank_sheets ADD COLUMN template_snapshot_json TEXT NOT NULL DEFAULT '{}';")
+
+    def _apply_selected_template_mapping(self, fingerprint: str, columns: list[str], template: BankTemplate) -> None:
+        self._client.execute("DELETE FROM meta_field_mapping WHERE template_fingerprint=?;", (fingerprint,))
+        for std_field, aliases in template.field_map.items():
+            source = find_column(columns, aliases)
+            if source:
+                self._client.execute("INSERT INTO meta_field_mapping (template_fingerprint, raw_field_name, std_field_name, template_type, transform_rule, priority, is_active) VALUES (?, ?, ?, ?, 'identity', 10, 1);", (fingerprint, source, std_field, template.template_type))
+
+    def _template_snapshot(self, template: BankTemplate | None, columns: list[str], bank_id: str) -> dict[str, Any]:
+        if template is None:
+            return {}
+        field_map: dict[str, str] = {}
+        for std_field, aliases in template.field_map.items():
+            source = find_column(columns, aliases)
+            if source:
+                field_map[std_field] = source
+        return {
+            "template_id": template.template_id,
+            "template_type": template.template_type,
+            "bank_id": bank_id,
+            "field_map": field_map,
+            "direction_rules": dict(template.direction_rules or {}),
+            "datetime_patterns": template.datetime_patterns,
+        }
 
     def _create_raw_table(self, raw_table_name: str, columns: list[str]) -> None:
         """Create raw table with dynamic source columns."""
@@ -487,16 +565,17 @@ class BankIngestService:
         path: Path,
         file_hash: str,
         bank_name: str,
+        bank_id: str,
         source_type: str,
     ) -> int:
         """Insert one file record and return file id."""
         self._client.execute(
             """
             INSERT INTO meta_bank_files
-            (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'imported');
+            (file_name, file_path, file_hash, bank_name, bank_id, source_type, import_batch_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'imported');
             """,
-            (path.name, str(path), file_hash, bank_name, source_type, batch_id),
+            (path.name, str(path), file_hash, bank_name, bank_id, source_type, batch_id),
         )
         rows = self._client.query_all(
             """
@@ -516,15 +595,18 @@ class BankIngestService:
         raw_table_name: str,
         rows_imported: int,
         source_type: str,
+        selected_template_id: str = "",
+        template_type: str = "txn_detail",
+        template_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Insert one sheet-level metadata row."""
         self._client.execute(
             """
             INSERT INTO meta_bank_sheets
-            (file_id, sheet_name, header_row_no, template_fingerprint, source_type, raw_table_name, rows_imported)
-            VALUES (?, ?, 1, ?, ?, ?, ?);
+            (file_id, sheet_name, header_row_no, template_fingerprint, source_type, raw_table_name, rows_imported, selected_template_id, template_type, template_snapshot_json)
+            VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (file_id, sheet_name, fingerprint, source_type, raw_table_name, rows_imported),
+            (file_id, sheet_name, fingerprint, source_type, raw_table_name, rows_imported, selected_template_id, template_type, json.dumps(template_snapshot or {}, ensure_ascii=False)),
         )
 
     def _write_log(self, batch_id: str, file_path: str, level: str, message: str) -> None:

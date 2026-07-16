@@ -51,6 +51,7 @@ from app.services.integration.commercial.analysis_service import CommercialAnaly
 from app.services.integration.telecom.analysis_service import TelecomAnalysisFilters
 from app.services.integration.wechat.analysis_service import WechatAnalysisFilters
 from app.services.integration.bank.user_bank_template_repository import UserBankTemplateRepository
+from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 from app.services.desensitizer_service import collect_supported_files, process_single_file
 from app.services.integration.qichacha_client import (
@@ -426,6 +427,7 @@ class UserBankTemplatePayload(BaseModel):
     display_name: str = Field(..., min_length=1)
     template_type: str = Field(..., description="account_profile 或 txn_detail")
     bank_display_name: str = Field(..., min_length=1)
+    bank_id: Optional[str] = None
     bank_keywords: List[str] = Field(default_factory=list)
     sheet_keywords: List[str] = Field(default_factory=list)
     field_map: Dict[str, List[str]] = Field(default_factory=dict)
@@ -444,6 +446,7 @@ class UserBankTemplatePatchBody(BaseModel):
     display_name: Optional[str] = None
     template_type: Optional[str] = None
     bank_display_name: Optional[str] = None
+    bank_id: Optional[str] = None
     bank_keywords: Optional[List[str]] = None
     sheet_keywords: Optional[List[str]] = None
     field_map: Optional[Dict[str, List[str]]] = None
@@ -453,6 +456,17 @@ class UserBankTemplatePatchBody(BaseModel):
     template_group_id: Optional[str] = None
     direction_rules: Optional[Dict[str, str]] = None
     datetime_patterns: Optional[Dict[str, Any]] = None
+    is_active: Optional[int] = None
+
+
+class BankCatalogCreateBody(BaseModel):
+    display_name: str = Field(..., min_length=1)
+    aliases: List[str] = Field(default_factory=list)
+
+
+class BankCatalogPatchBody(BaseModel):
+    display_name: Optional[str] = None
+    aliases: Optional[List[str]] = None
     is_active: Optional[int] = None
 
 
@@ -851,11 +865,17 @@ def create_app() -> FastAPI:
         files: List[UploadFile] = File(...),
         bank_name: str = "默认来源",
         batch_name: Optional[str] = Form(default=None),
+        sheet_assignments_json: Optional[str] = Form(default=None),
     ) -> Dict[str, str]:
         if source_type not in {"bank", "commercial", "enterprise", "wechat", "telecom"}:
             raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、enterprise、wechat 或 telecom")
         task_upload_dir = uploads_dir() / source_type
         saved: List[str] = []
+        saved_assignments: Dict[str, Dict[str, Dict[str, str]]] = {}
+        try:
+            requested_assignments = json.loads(sheet_assignments_json) if sheet_assignments_json else {}
+        except json.JSONDecodeError as err:
+            raise HTTPException(status_code=400, detail="模板选择数据格式错误") from err
         task_upload_dir.mkdir(parents=True, exist_ok=True)
         for item in files:
             original = Path(item.filename or "upload.xlsx").name
@@ -863,6 +883,10 @@ def create_app() -> FastAPI:
             with target.open("wb") as fp:
                 shutil.copyfileobj(item.file, fp)
             saved.append(str(target))
+            if source_type == "bank" and isinstance(requested_assignments, dict):
+                config = requested_assignments.get(original)
+                if isinstance(config, dict):
+                    saved_assignments[str(target)] = config
         if source_type == "enterprise":
             return enqueue(
                 background_tasks,
@@ -880,6 +904,7 @@ def create_app() -> FastAPI:
                 bank_name=bank_name,
                 source_type=source_type,
                 batch_name=batch_name,
+                sheet_assignments=saved_assignments if source_type == "bank" else None,
             ).to_dict(),
         )
 
@@ -1712,6 +1737,7 @@ def create_app() -> FastAPI:
             "display_name": rec.display_name,
             "template_type": rec.template_type,
             "bank_display_name": rec.bank_display_name,
+            "bank_id": rec.bank_id,
             "bank_keywords": rec.bank_keywords,
             "sheet_keywords": rec.sheet_keywords,
             "field_map": rec.field_map,
@@ -1722,6 +1748,18 @@ def create_app() -> FastAPI:
             "direction_rules": rec.direction_rules,
             "datetime_patterns": rec.datetime_patterns,
             "is_active": rec.is_active,
+            "created_at": rec.created_at,
+            "updated_at": rec.updated_at,
+            "is_builtin": False,
+        }
+
+    def _bank_dict(rec: Any) -> Dict[str, Any]:
+        return {
+            "bank_id": rec.bank_id,
+            "display_name": rec.display_name,
+            "aliases": rec.aliases,
+            "is_builtin": bool(rec.is_builtin),
+            "is_active": int(rec.is_active),
             "created_at": rec.created_at,
             "updated_at": rec.updated_at,
         }
@@ -1744,7 +1782,51 @@ def create_app() -> FastAPI:
         if group_id and str(group_id).strip():
             gid = str(group_id).strip()
             rows = [r for r in rows if (r.template_group_id or "") == gid]
-        return {"items": [_user_tpl_dict(r) for r in rows]}
+        from app.services.integration.bank.template_library import BUILTIN_TEMPLATES
+
+        catalog = BankCatalogRepository()
+        builtins = [
+            {
+                "template_id": item.template_id,
+                "display_name": f"{item.bank_display_name}-{('开户信息' if item.template_type == 'account_profile' else '交易明细')}",
+                "template_type": item.template_type,
+                "bank_display_name": item.bank_display_name,
+                "bank_id": (catalog.get_by_name(item.bank_display_name).bank_id if catalog.get_by_name(item.bank_display_name) else ""),
+                "bank_keywords": list(item.bank_keywords),
+                "sheet_keywords": list(item.sheet_keywords),
+                "field_map": {key: list(value) for key, value in item.field_map.items()},
+                "signature_columns": list(item.signature_columns),
+                "header_row_0based": item.header_row_hint,
+                "match_priority": -1,
+                "is_active": 1,
+                "is_builtin": True,
+            }
+            for item in BUILTIN_TEMPLATES
+        ]
+        return {"items": [*builtins, *[_user_tpl_dict(r) for r in rows]]}
+
+    @app.get("/api/banks")
+    def list_banks(active_only: bool = Query(default=False)) -> Dict[str, Any]:
+        return {"items": [_bank_dict(item) for item in BankCatalogRepository().list_all(active_only=active_only)]}
+
+    @app.post("/api/banks")
+    def create_bank(payload: BankCatalogCreateBody) -> Dict[str, Any]:
+        try:
+            return _bank_dict(BankCatalogRepository().create(payload.display_name, payload.aliases))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.patch("/api/banks/{bank_id}")
+    def patch_bank(bank_id: str, payload: BankCatalogPatchBody) -> Dict[str, Any]:
+        try:
+            return _bank_dict(BankCatalogRepository().update(
+                bank_id,
+                display_name=payload.display_name,
+                aliases=payload.aliases,
+                is_active=payload.is_active,
+            ))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
 
     @app.post("/api/bank-templates/analyze-sample")
     async def analyze_bank_template_sample(
@@ -1835,8 +1917,8 @@ def create_app() -> FastAPI:
                 tmp.write(body)
                 tmp_path = Path(tmp.name)
             wiz = BankTemplateWizardService()
-            names = wiz.list_sheet_names(tmp_path)
-            return {"sheets": names}
+            preview = wiz.preview_import(tmp_path)
+            return {"sheets": [item["sheet_name"] for item in preview["sheets"]], "preview": preview}
         finally:
             if tmp_path is not None and tmp_path.is_file():
                 try:
@@ -1884,6 +1966,7 @@ def create_app() -> FastAPI:
             display_name=payload.display_name.strip(),
             template_type=payload.template_type,
             bank_display_name=payload.bank_display_name.strip(),
+            bank_id=(payload.bank_id or "").strip() or None,
             bank_keywords=[str(x).strip() for x in payload.bank_keywords if str(x).strip()],
             sheet_keywords=[str(x).strip() for x in payload.sheet_keywords if str(x).strip()],
             field_map={k: [str(x) for x in v] for k, v in payload.field_map.items()},
@@ -1919,6 +2002,7 @@ def create_app() -> FastAPI:
             display_name=payload.display_name,
             template_type=payload.template_type,
             bank_display_name=payload.bank_display_name,
+            bank_id=payload.bank_id,
             bank_keywords=payload.bank_keywords,
             sheet_keywords=payload.sheet_keywords,
             field_map=payload.field_map,

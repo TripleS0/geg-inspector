@@ -207,7 +207,7 @@ function BankOcrProofreadPage() {
             <Paragraph style={{ color: "#5b6477", marginBottom: 0 }}>
               左侧对照原图，右侧修正识别结果。列名保持 OCR 原始表头（如存入金额、检出金额），不会自动合并为标准字段。
               确认无误后录入原始表，再到
-              <Link to="/data-center/manage/bank-templates"> 银行模板录入 </Link>
+              <Link to="/data-center/manage/bank-templates"> 银行模板管理 </Link>
               配置映射，并在批次管理中执行标准化。
             </Paragraph>
           </div>
@@ -282,7 +282,7 @@ function BankOcrProofreadPage() {
             <Button type="primary" onClick={() => void onCommit()} loading={committing} disabled={job?.status === "committed"}>
               确认录入原始表
             </Button>
-            <Link to="/data-center/manage/bank-templates">银行模板录入</Link>
+                <Link to="/data-center/manage/bank-templates">银行模板管理</Link>
             <Button danger onClick={() => void onDiscard()} disabled={job?.status === "committed"}>
               放弃
             </Button>

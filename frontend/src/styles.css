@@ -462,6 +462,16 @@ html, body, #root {
 
 .fusion-wizard-import-queue {
   margin-top: 24px;
+  max-height: min(65vh, 720px);
+  overflow-y: auto;
+}
+
+.fusion-wizard-import-queue .ant-list-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  box-shadow: 0 8px 12px -14px rgba(48, 55, 66, 0.5);
 }
 
 .fusion-wizard-import-queue .ant-list-item {

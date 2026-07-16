@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from app.application.bootstrap import bootstrap_database
 from app.application.dataset_use_cases import DatasetUseCase
@@ -56,13 +57,16 @@ class ImportUseCase:
         source_type: str,
         batch_name: str | None = None,
         standardize: bool = True,
+        sheet_assignments: dict[str, Any] | None = None,
     ) -> ImportSummary:
         """Import files and run source-specific post-processing."""
         source_key = (source_type or "bank").strip().lower()
         if source_key not in {"bank", "commercial", "wechat", "telecom"}:
             raise ValueError("source_type 仅支持 bank、commercial、wechat 或 telecom")
         bundle = get_integration_bundle(source_key)
-        ingest_result = bundle.ingest_cls(self._client).ingest_files(file_paths, bank_name, source_key)
+        ingest_result = bundle.ingest_cls(self._client).ingest_files(
+            file_paths, bank_name, source_key, sheet_assignments=sheet_assignments
+        )
         if ingest_result.rows_total <= 0:
             raise ValueError(
                 f"导入未产生有效数据（失败 {ingest_result.failed_files}/{ingest_result.files_total} 个文件），请检查文件格式与内容"

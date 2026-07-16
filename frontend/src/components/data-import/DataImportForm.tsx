@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Card, Form, Input, List, Radio, Space, Tabs, Tag, Typography, Upload } from "antd";
+import { Alert, Button, Card, Checkbox, Form, Input, List, Radio, Select, Space, Tabs, Tag, Typography, Upload, message } from "antd";
 import { InboxOutlined } from "@ant-design/icons";
 import { Link } from "react-router-dom";
 import type { UploadFile } from "antd";
-import { api, type BankOcrJob, type BankOcrProfile } from "../../api";
+import { api, type BankCatalogItem, type BankOcrJob, type BankOcrProfile, type BankTemplateType, type UserBankTemplate } from "../../api";
 import { SOURCE_LABELS, SourceType } from "./constants";
 
 const { Dragger } = Upload;
@@ -44,6 +44,22 @@ export interface DataImportPayload {
   values: DataImportFormValues;
   files: File[];
   bankImportMode: "excel" | "ocr";
+  sheetAssignments?: Record<string, BankFileAssignment>;
+}
+
+interface BankSheetAssignment {
+  template_id: string;
+  template_type: BankTemplateType;
+  headers: string[];
+  suggested_template_id: string;
+}
+
+interface BankFileAssignment {
+  bank_id: string;
+  suggested_bank_name?: string;
+  default_account_template_id?: string;
+  default_txn_template_id?: string;
+  sheets: Record<string, BankSheetAssignment>;
 }
 
 interface UseDataImportFormOptions {
@@ -64,6 +80,13 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
   const [bankImportMode, setBankImportMode] = useState<"excel" | "ocr">("excel");
   const [ocrJobs, setOcrJobs] = useState<BankOcrJob[]>([]);
   const [ocrFormatHint, setOcrFormatHint] = useState("支持 PNG、JPEG、BMP、TIFF、WebP、GIF、SVG 及 PDF");
+  const [bankTemplates, setBankTemplates] = useState<UserBankTemplate[]>([]);
+  const [banks, setBanks] = useState<BankCatalogItem[]>([]);
+  const [bankAssignments, setBankAssignments] = useState<Record<string, BankFileAssignment>>({});
+  const [selectedBankFiles, setSelectedBankFiles] = useState<string[]>([]);
+  const [batchBankId, setBatchBankId] = useState("");
+  const [batchAccountTemplateId, setBatchAccountTemplateId] = useState("");
+  const [batchTxnTemplateId, setBatchTxnTemplateId] = useState("");
   const sourceType = Form.useWatch("source_type", form) as SourceType | undefined;
   const activeSource = sourceType || "bank";
   const activeFiles = filesBySource[activeSource] || [];
@@ -86,6 +109,16 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
       active = false;
     };
   }, [allowOcr]);
+
+  useEffect(() => {
+    void Promise.all([api.listBankTemplates(), api.listBanks(true)]).then(([templateData, bankData]) => {
+      setBankTemplates(templateData.items || []);
+      setBanks(bankData.items || []);
+    }).catch(() => {
+      setBankTemplates([]);
+      setBanks([]);
+    });
+  }, []);
 
   useEffect(() => {
     sourceTypeRef.current = activeSource;
@@ -115,6 +148,13 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
   const updateFilesForSource = (type: SourceType, fileList: UploadFile[]) => {
     setFilesBySource((prev) => ({ ...prev, [type]: fileList }));
     syncBatchNameFromFiles(type, fileList);
+    if (type === "bank") {
+      setBankAssignments((prev) => Object.fromEntries(fileList.map((item) => {
+        const file = item.originFileObj as File | undefined;
+        const fileName = file?.name || item.name;
+        return [fileName, prev[fileName] || { bank_id: "", sheets: {} }];
+      })));
+    }
   };
 
   const handleValuesChange = (changed: Partial<DataImportFormValues>) => {
@@ -145,9 +185,10 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
           },
           files: realFiles,
           bankImportMode: "excel" as const,
+          sheetAssignments: type === "bank" ? bankAssignments : undefined,
         }];
       }),
-    [bankNames, batchNames, filesBySource]
+    [bankAssignments, bankNames, batchNames, filesBySource]
   );
 
   const clearFilesForSource = (type: SourceType) => {
@@ -167,6 +208,8 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     setBankNames(createTextMap("默认来源"));
     setAutoBatchNames(createTextMap());
     setBankImportMode("excel");
+    setBankAssignments({});
+    setSelectedBankFiles([]);
   };
 
   const getPayload = async (): Promise<DataImportPayload> => {
@@ -198,15 +241,167 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
         },
         files: realFiles,
         bankImportMode: "excel" as const,
+        sheetAssignments: type === "bank" ? bankAssignments : undefined,
       }];
     });
     if (!payloads.length) {
       throw new Error("请先至少为一个数据来源选择表格文件（.xlsx 或 .xls）");
     }
+    const bankPayload = payloads.find((item) => item.values.source_type === "bank");
+    if (bankPayload) {
+      for (const file of bankPayload.files) {
+        const config = bankAssignments[file.name];
+        if (!config?.bank_id) throw new Error(`请先确认文件“${file.name}”所属银行`);
+        if (!Object.keys(config.sheets).length && !config.default_account_template_id && !config.default_txn_template_id) {
+          throw new Error(`请先为“${file.name}”选择开户信息或交易流水模板`);
+        }
+      }
+    }
     return payloads;
   };
 
+  const applyBatchAssignment = () => {
+    if (!selectedBankFiles.length) return;
+    if (!batchBankId && !batchAccountTemplateId && !batchTxnTemplateId) {
+      message.warning("请先选择要应用的银行或模板");
+      return;
+    }
+    const validFiles = selectedBankFiles.filter((fileName) => bankAssignments[fileName]);
+    if (!validFiles.length) {
+      message.warning("文件仍在解析中，请稍后再试");
+      return;
+    }
+    setBankAssignments((prev) => {
+      const next = { ...prev };
+      selectedBankFiles.forEach((fileName) => {
+        const current = next[fileName];
+        if (!current) return;
+        const bankId = batchBankId || current.bank_id;
+        next[fileName] = {
+          ...current,
+          bank_id: bankId,
+          default_account_template_id: batchAccountTemplateId || (current.default_account_template_id && bankTemplates.find((item) => item.template_id === current.default_account_template_id)?.bank_id === bankId ? current.default_account_template_id : ""),
+          default_txn_template_id: batchTxnTemplateId || (current.default_txn_template_id && bankTemplates.find((item) => item.template_id === current.default_txn_template_id)?.bank_id === bankId ? current.default_txn_template_id : ""),
+          sheets: Object.fromEntries(Object.entries(current.sheets).map(([sheetName, sheet]) => {
+            const selectedId = sheet.template_type === "account_profile"
+              ? batchAccountTemplateId
+              : batchTxnTemplateId;
+            const currentTemplate = bankTemplates.find((item) => item.template_id === sheet.template_id);
+            return [sheetName, {
+              ...sheet,
+              template_id: selectedId || (currentTemplate?.bank_id === bankId ? sheet.template_id : ""),
+            }];
+          })),
+        };
+      });
+      return next;
+    });
+    const bankLabel = banks.find((item) => item.bank_id === batchBankId)?.display_name;
+    const applied = [bankLabel, batchAccountTemplateId ? "开户信息模板" : "", batchTxnTemplateId ? "交易流水模板" : ""].filter(Boolean);
+    message.success(`已将${applied.join("、")}应用到 ${validFiles.length} 个文件`);
+    setSelectedBankFiles([]);
+  };
+  const clearBatchTemplates = () => {
+    setBankAssignments((prev) => {
+      const next = { ...prev };
+      selectedBankFiles.forEach((fileName) => {
+        if (!next[fileName]) return;
+        next[fileName] = {
+          ...next[fileName],
+          default_account_template_id: "",
+          default_txn_template_id: "",
+          sheets: Object.fromEntries(Object.entries(next[fileName].sheets).map(([name, sheet]) => [name, { ...sheet, template_id: "" }])),
+        };
+      });
+      return next;
+    });
+  };
+  const toggleBankFileSelection = (fileName: string, checked: boolean) => {
+    setSelectedBankFiles((prev) => checked ? [...new Set([...prev, fileName])] : prev.filter((name) => name !== fileName));
+  };
+  const replaceBankFileSelection = (fileNames: string[]) => {
+    setSelectedBankFiles([...new Set(fileNames)]);
+  };
+  const bankAssignmentSummaries = useMemo(() => Object.fromEntries(
+    Object.entries(bankAssignments).map(([fileName, config]) => {
+      const sheetItems = Object.values(config.sheets);
+      return [fileName, {
+        bankName: banks.find((bank) => bank.bank_id === config.bank_id)?.display_name || "银行待确认",
+        confirmedTemplates: sheetItems.filter((sheet) => sheet.template_id).length,
+        sheetCount: sheetItems.length,
+        hasPresetTemplate: Boolean(config.default_account_template_id || config.default_txn_template_id),
+      }];
+    })
+  ), [bankAssignments, banks]);
   const isOcrMode = sourceType === "bank" && bankImportMode === "ocr";
+
+  const bankBatchToolbar = filesBySource.bank.length ? (
+    <Space wrap>
+      <Checkbox
+        checked={selectedBankFiles.length === filesBySource.bank.length}
+        indeterminate={selectedBankFiles.length > 0 && selectedBankFiles.length < filesBySource.bank.length}
+        onChange={(event) => setSelectedBankFiles(event.target.checked ? filesBySource.bank.map((item) => item.name) : [])}
+      >全选银行文件</Checkbox>
+      <Select placeholder="批量归属银行" value={batchBankId || undefined} onChange={(value) => {
+        setBatchBankId(value);
+        setBatchAccountTemplateId("");
+        setBatchTxnTemplateId("");
+      }} style={{ width: 170 }} options={banks.map((item) => ({ label: item.display_name, value: item.bank_id }))} />
+      <Select placeholder="开户信息模板" value={batchAccountTemplateId || undefined} onChange={setBatchAccountTemplateId} allowClear disabled={!batchBankId} style={{ width: 220 }}
+        options={bankTemplates.filter((item) => item.bank_id === batchBankId && item.template_type === "account_profile" && item.is_active !== 0).map((item) => ({ label: `${item.is_builtin ? "内置" : "自定义"} · ${item.display_name}`, value: item.template_id }))} />
+      <Select placeholder="交易流水模板" value={batchTxnTemplateId || undefined} onChange={setBatchTxnTemplateId} allowClear disabled={!batchBankId} style={{ width: 220 }}
+        options={bankTemplates.filter((item) => item.bank_id === batchBankId && item.template_type === "txn_detail" && item.is_active !== 0).map((item) => ({ label: `${item.is_builtin ? "内置" : "自定义"} · ${item.display_name}`, value: item.template_id }))} />
+      <Button onClick={applyBatchAssignment} disabled={!selectedBankFiles.length}>应用到已勾选文件</Button>
+      <Button onClick={clearBatchTemplates} disabled={!selectedBankFiles.length}>清除模板</Button>
+      <Link to="/data-center/manage/bank-templates"><Button type="link">管理银行与模板</Button></Link>
+    </Space>
+  ) : null;
+
+  const bankPreview = filesBySource.bank.length ? (
+    <Card size="small" title="银行文件预览与模板选择" style={{ marginTop: 12 }}>
+      <div style={{ marginBottom: 10 }}>{bankBatchToolbar}</div>
+      <List size="small" dataSource={filesBySource.bank} renderItem={(item) => {
+        const file = item.originFileObj as File | undefined;
+        const fileName = file?.name || item.name;
+        const config = bankAssignments[fileName];
+        const sheets = config?.sheets || {};
+        const hasPresetTemplate = Boolean(config?.default_account_template_id || config?.default_txn_template_id);
+        const complete = Boolean(config?.bank_id) && (hasPresetTemplate || (Object.keys(sheets).length > 0 && Object.values(sheets).every((sheet) => sheet.template_id)));
+        return <List.Item>
+          <Space direction="vertical" style={{ width: "100%" }} size={6}>
+            <Space wrap>
+              <Checkbox checked={selectedBankFiles.includes(fileName)} onChange={(event) => setSelectedBankFiles((prev) => event.target.checked ? [...new Set([...prev, fileName])] : prev.filter((name) => name !== fileName))}>{fileName}</Checkbox>
+              <Tag color={complete ? "success" : "warning"}>{complete ? "已确认" : "待确认"}</Tag>
+              <Text type="secondary">{Object.keys(sheets).length ? `${Object.keys(sheets).length} 个 Sheet` : "导入时统一识别 Sheet"}</Text>
+              <Select placeholder="确认所属银行" value={config?.bank_id || undefined} style={{ width: 170 }} onChange={(bankId) => setBankAssignments((prev) => {
+                const current = prev[fileName];
+                if (!current) return prev;
+                return { ...prev, [fileName]: {
+                  ...current,
+                  bank_id: bankId,
+                  sheets: Object.fromEntries(Object.entries(current.sheets).map(([name, sheet]) => {
+                    const template = bankTemplates.find((entry) => entry.template_id === sheet.template_id);
+                    return [name, { ...sheet, template_id: template?.bank_id === bankId ? sheet.template_id : "" }];
+                  })),
+                }};
+              })} options={banks.map((entry) => ({ label: entry.display_name, value: entry.bank_id }))} />
+            </Space>
+            {Object.keys(sheets).map((sheet) => {
+              const sheetConfig = sheets[sheet];
+              const candidates = bankTemplates.filter((entry) => entry.bank_id === config?.bank_id && entry.template_type === sheetConfig.template_type && entry.is_active !== 0);
+              return <Space key={sheet} wrap style={{ paddingLeft: 24 }}><Tag>{sheet}</Tag>
+                <Tag color="blue">{sheetConfig.template_type === "account_profile" ? "开户信息" : "交易流水"}</Tag>
+                <Text style={{ width: 260 }} ellipsis={{ tooltip: sheetConfig.headers.join("、") }}>{sheetConfig.headers.join("、") || "未识别到表头"}</Text>
+                <Select placeholder="选择模板" value={sheetConfig.template_id || undefined} style={{ width: 250 }} onChange={(value) => setBankAssignments((prev) => ({ ...prev, [fileName]: { ...prev[fileName], sheets: { ...prev[fileName].sheets, [sheet]: { ...prev[fileName].sheets[sheet], template_id: value } } } }))}
+                  options={candidates.map((entry) => ({ label: `${entry.is_builtin ? "内置" : "自定义"} · ${entry.display_name}`, value: entry.template_id }))} />
+                {sheetConfig.suggested_template_id && sheetConfig.template_id === sheetConfig.suggested_template_id ? <Text type="secondary">系统推荐</Text> : null}
+              </Space>;
+            })}
+          </Space>
+        </List.Item>;
+      }} />
+    </Card>
+  ) : null;
 
   const uploadSection =
     sourceType === "bank" && allowOcr ? (
@@ -218,6 +413,7 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
             key: "excel",
             label: "Excel 导入",
             children: (
+              <>
               <Form.Item label="选择表格文件" className="data-import-upload-item">
                 <Dragger
                   className="import-upload-dragger"
@@ -234,6 +430,8 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
                   <p className="ant-upload-hint">支持 .xlsx、.xls；数据仅写入本地数据库</p>
                 </Dragger>
               </Form.Item>
+              {bankPreview}
+              </>
             ),
           },
           {
@@ -365,6 +563,11 @@ export function useDataImportForm(options: UseDataImportFormOptions = {}) {
     hasExcelFiles,
     hasOcrFiles,
     selectedExcelPayloads,
+    bankBatchToolbar,
+    selectedBankFiles,
+    toggleBankFileSelection,
+    replaceBankFileSelection,
+    bankAssignmentSummaries,
   };
 }
 

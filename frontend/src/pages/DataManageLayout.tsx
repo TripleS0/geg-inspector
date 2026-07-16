@@ -8,7 +8,7 @@ export const DATA_MANAGE_SECTIONS = [
   { key: "tables", label: "数据表浏览", path: "/data-center/manage/tables" },
   { key: "desensitization", label: "数据脱敏", path: "/data-center/manage/desensitization" },
   { key: "qichacha", label: "工商信息录入", path: "/data-center/manage/qichacha-ic" },
-  { key: "bank-templates", label: "银行模板录入", path: "/data-center/manage/bank-templates" },
+  { key: "bank-templates", label: "银行模板管理", path: "/data-center/manage/bank-templates" },
 ] as const;
 
 export function dataManageTablesPath(params?: { table?: string; highlight?: number | string }) {
