@@ -138,7 +138,7 @@ class FusionQueryService:
         """按关键词前缀/包含匹配案件内已关联标识符与候选标识符。"""
         needle = (query or "").strip().lower()
         limit = max(1, min(int(limit), 50))
-        resolved_type = self._resolve_suggest_type(anchor_type)
+        allowed_types = self._resolve_suggest_types(anchor_type)
         items: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
 
@@ -153,7 +153,7 @@ class FusionQueryService:
         ) -> None:
             if not identifier_norm or not display_value:
                 return
-            if resolved_type and identifier_type != resolved_type:
+            if allowed_types and identifier_type not in allowed_types:
                 return
             key = (identifier_type, identifier_norm)
             if key in seen:
@@ -212,27 +212,42 @@ class FusionQueryService:
         items.sort(key=lambda x: (0 if x["source"] == "linked" else 1, x["identifier_type"], x["display_value"]))
         return items[:limit]
 
-    def _resolve_suggest_type(self, anchor_type: str) -> str:
+    def _resolve_suggest_types(self, anchor_type: str) -> frozenset[str]:
+        """Return allowed identifier types for suggestion filtering.
+
+        「银行卡/账号」同时匹配 bank_card 与 bank_acct。
+        """
         kind = (anchor_type or "auto").strip().lower()
         if kind == "auto":
-            return ""
-        type_map = {
-            "bank": "bank_card",
-            "bank_card": "bank_card",
-            "bank_acct": "bank_acct",
-            "card": "bank_card",
-            "phone": "phone",
-            "mobile": "phone",
-            "wechat": "wechat_name",
-            "wechat_name": "wechat_name",
-            "enterprise": "enterprise_name",
-            "enterprise_name": "enterprise_name",
-            "company": "enterprise_name",
-            "person": "person_name",
-            "person_name": "person_name",
-            "name": "person_name",
+            return frozenset()
+        type_map: dict[str, frozenset[str]] = {
+            "bank": frozenset({"bank_card", "bank_acct"}),
+            "bank_card": frozenset({"bank_card", "bank_acct"}),
+            "bank_acct": frozenset({"bank_card", "bank_acct"}),
+            "card": frozenset({"bank_card", "bank_acct"}),
+            "phone": frozenset({"phone"}),
+            "mobile": frozenset({"phone"}),
+            "wechat": frozenset({"wechat_name"}),
+            "wechat_name": frozenset({"wechat_name"}),
+            "enterprise": frozenset({"enterprise_name"}),
+            "enterprise_name": frozenset({"enterprise_name"}),
+            "company": frozenset({"enterprise_name"}),
+            "person": frozenset({"person_name"}),
+            "person_name": frozenset({"person_name"}),
+            "name": frozenset({"person_name"}),
         }
-        return type_map.get(kind, kind)
+        if kind in type_map:
+            return type_map[kind]
+        return frozenset({kind})
+
+    def _resolve_suggest_type(self, anchor_type: str) -> str:
+        """Backward-compatible single-type resolver (prefer ``_resolve_suggest_types``)."""
+        allowed = self._resolve_suggest_types(anchor_type)
+        if not allowed:
+            return ""
+        if allowed == frozenset({"bank_card", "bank_acct"}):
+            return "bank_card"
+        return next(iter(allowed))
 
     def _resolve_anchor(self, anchor_type: str, anchor_value: str) -> tuple[str, str]:
         text = (anchor_value or "").strip()
@@ -269,6 +284,9 @@ class FusionQueryService:
             "name": "person_name",
         }
         resolved = type_map.get(kind, kind)
+        # Keep scoped bank norms like "建设银行|3328134432" so linked-person lookup still matches.
+        if resolved in {"bank_card", "bank_acct"} and "|" in text:
+            return resolved, text
         norm = normalize_identifier(resolved, text)
         if resolved == "enterprise_name":
             norm = normalize_enterprise_name(text)

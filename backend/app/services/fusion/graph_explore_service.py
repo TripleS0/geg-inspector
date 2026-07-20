@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.services.fusion.fusion_query_service import FusionQueryService
-from app.services.fusion.identifier_norm import normalize_identifier
+from app.services.fusion.identifier_norm import normalize_identifier, split_scoped_bank_account
 from app.services.fusion.person_link_service import PersonLinkService
 from app.services.integration.commercial.ic_ingest_service import normalize_enterprise_name
 from app.services.integration.telecom.phone_utils import normalize_phone
@@ -186,6 +186,11 @@ class GraphExploreService:
             if truncated:
                 break
 
+        # Include edges among already-visible nodes (e.g. direct link between two anchors at depth 0).
+        for edge in filtered_edges:
+            if edge.source in visible_nodes and edge.target in visible_nodes:
+                visible_edges[edge.id] = edge
+
         for edge in visible_edges.values():
             if edge.source in visible_nodes:
                 self._bump_node_stats(visible_nodes[edge.source], edge.type)
@@ -193,6 +198,10 @@ class GraphExploreService:
                 self._bump_node_stats(visible_nodes[edge.target], edge.type)
 
         paths = self._find_paths(anchor_ids, visible_edges, max_depth=max(2, min(max_depth, 5))) if len(anchor_ids) >= 2 else []
+        # Bank-card anchors: if same-type BFS missed a path, backfill direct txn edges from std tables.
+        if len(anchor_ids) >= 2 and not paths and all(aid.startswith("bank_card:") for aid in anchor_ids[:2]):
+            self._backfill_bank_card_txn_edge(case_id, batch_ids, anchor_ids[0], anchor_ids[1], all_nodes, visible_nodes, visible_edges)
+            paths = self._find_paths(anchor_ids, visible_edges, max_depth=max(2, min(max_depth, 5)))
         common_neighbors = self._common_neighbors(anchor_ids, visible_edges, visible_nodes) if len(anchor_ids) >= 2 else []
 
         nodes_payload = []
@@ -307,6 +316,8 @@ class GraphExploreService:
         persons = self._person_links.list_persons(case_id)
         person_by_name: dict[str, str] = {}
         person_by_identifier: dict[tuple[str, str], str] = {}
+        # digits / scoped acct -> bank_card node id (avoids same-name person collapse)
+        bank_node_by_acct: dict[str, str] = {}
         phone_to_person: dict[str, str] = {}
 
         def add_node(node_id: str, label: str, node_type: str) -> None:
@@ -331,9 +342,9 @@ class GraphExploreService:
             edge_id = f"{relation_type}:{a}:{b}"
             edge = edges.get(edge_id)
             if edge is None:
-                edge = ExploreEdge(id=edge_id, source=a, target=b, type=relation_type, amount=0.0 if amount is not None else None, duration_sec=0.0 if duration is not None else None, record_count=0)
+                edge = ExploreEdge(id=edge_id, source=a, target=b, type=relation_type, amount=0.0 if amount is not None else None, duration_sec=0.0 if duration is not None else None, record_count=0, weight=0)
                 edges[edge_id] = edge
-            edge.weight += 1 if edge.record_count else 0
+            edge.weight += 1
             edge.record_count += 1
             if amount is not None:
                 edge.amount = round((edge.amount or 0.0) + abs(amount), 2)
@@ -356,6 +367,7 @@ class GraphExploreService:
                     node_id, ntype = f"phone:{norm}", "phone"
                 elif ltype in {"bank_card", "bank_acct"}:
                     node_id, ntype = f"bank_card:{norm}", "bank_card"
+                    self._index_bank_account(norm, node_id, person_id, person_by_identifier, bank_node_by_acct)
                 elif ltype == "wechat_name":
                     node_id, ntype = f"wechat:{norm}", "wechat"
                 elif ltype == "enterprise_name":
@@ -370,7 +382,7 @@ class GraphExploreService:
         for batch_id in scoped_batch_ids:
             source_type = self._fusion._batch_source_type(batch_id)
             if source_type == "bank" and "bank_txn" in relation_types:
-                self._add_bank_edges(batch_id, nodes, add_node, add_edge, person_by_name, person_by_identifier)
+                self._add_bank_edges(batch_id, nodes, add_node, add_edge, person_by_identifier, bank_node_by_acct)
             elif source_type == "telecom" and "telecom" in relation_types:
                 self._add_raw_pair_edges(batch_id, "telecom", add_node, add_edge, resolve_phone_node, phone_to_person, person_by_name)
             elif source_type == "wechat" and "wechat" in relation_types:
@@ -381,18 +393,108 @@ class GraphExploreService:
                 self._add_commercial_edges(batch_id, nodes, add_node, add_edge)
         return nodes, edges
 
-    def _add_bank_edges(self, batch_id: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any, person_by_name: dict[str, str], person_by_identifier: dict[tuple[str, str], str]) -> None:
+    def _index_bank_account(
+        self,
+        norm: str,
+        node_id: str,
+        person_id: str,
+        person_by_identifier: dict[tuple[str, str], str],
+        bank_node_by_acct: dict[str, str],
+    ) -> None:
+        """Index scoped and digit-only bank accounts so txn rows can resolve card nodes."""
+        if not norm or not node_id:
+            return
+        bank_node_by_acct[norm] = node_id
+        _, digits = split_scoped_bank_account(norm)
+        keys = {norm}
+        if digits:
+            keys.add(digits)
+            person_by_identifier[("bank_acct", digits)] = person_id
+            person_by_identifier[("bank_card", digits)] = person_id
+            bank_node_by_acct[digits] = node_id
+        for key in keys:
+            person_by_identifier[("bank_acct", key)] = person_id
+            person_by_identifier[("bank_card", key)] = person_id
+
+    def _bank_card_endpoint(
+        self,
+        acct: str,
+        name: str,
+        bank_node_by_acct: dict[str, str],
+        add_node: Any,
+    ) -> str:
+        """Resolve a bank txn endpoint to a bank_card node (account-first, never by name)."""
+        acct_norm = normalize_identifier("bank_acct", acct)
+        if not acct_norm and acct:
+            # Preserve scoped forms already normalized as 银行|账号.
+            _, acct_norm = split_scoped_bank_account(acct)
+        if not acct_norm:
+            return ""
+        _, digits = split_scoped_bank_account(acct if "|" in (acct or "") else acct_norm)
+        lookup_keys = [k for k in (acct.strip(), acct_norm, digits) if k]
+        for key in lookup_keys:
+            node_id = bank_node_by_acct.get(key)
+            if node_id:
+                return node_id
+        node_id = f"bank_card:{acct_norm}"
+        add_node(node_id, acct or name or acct_norm, "bank_card")
+        for key in lookup_keys:
+            bank_node_by_acct[key] = node_id
+        return node_id
+
+    def _person_for_bank_acct(self, acct: str, person_by_identifier: dict[tuple[str, str], str]) -> str:
+        """Resolve person by bank account only (never by display name)."""
+        acct_norm = normalize_identifier("bank_acct", acct)
+        if not acct_norm and acct:
+            _, acct_norm = split_scoped_bank_account(acct)
+        if not acct_norm:
+            return ""
+        _, digits = split_scoped_bank_account(acct if "|" in (acct or "") else acct_norm)
+        for key in (acct.strip(), acct_norm, digits):
+            if not key:
+                continue
+            person_id = person_by_identifier.get(("bank_acct", key)) or person_by_identifier.get(("bank_card", key))
+            if person_id:
+                return person_id
+        return ""
+
+    def _add_bank_edges(
+        self,
+        batch_id: str,
+        nodes: dict[str, ExploreNode],
+        add_node: Any,
+        add_edge: Any,
+        person_by_identifier: dict[tuple[str, str], str],
+        bank_node_by_acct: dict[str, str],
+    ) -> None:
         rows = self._client.query_all("""
             SELECT std_id, person_name, acct_no, txn_time, txn_amount, txn_direction, counterparty_name, counterparty_account, summary
             FROM std_bank_txn WHERE import_batch_id=?;
         """, (batch_id,))
         for row in rows:
-            left = self._person_or_bank(str(row[1] or ""), str(row[2] or ""), person_by_name, person_by_identifier, add_node)
-            right = self._person_or_bank(str(row[6] or ""), str(row[7] or ""), person_by_name, person_by_identifier, add_node)
+            left_acct = str(row[2] or "")
+            right_acct = str(row[7] or "")
+            left_name = str(row[1] or "")
+            right_name = str(row[6] or "")
+            left_card = self._bank_card_endpoint(left_acct, left_name, bank_node_by_acct, add_node)
+            right_card = self._bank_card_endpoint(right_acct, right_name, bank_node_by_acct, add_node)
             amount = self._to_float(row[4])
-            counterparty = str(row[6] or row[7] or "")
-            record = {"record_type": "bank_txn", "time": str(row[3] or ""), "summary": str(row[8] or ""), "amount": amount, "counterparty": counterparty, "source_ref": {"layer": "std", "table": "std_bank_txn", "pk": {"std_id": int(row[0])}, "batch_id": batch_id}}
-            add_edge(left, right, "bank_txn", amount=amount, record=record)
+            counterparty = right_name or right_acct
+            record = {
+                "record_type": "bank_txn",
+                "time": str(row[3] or ""),
+                "summary": str(row[8] or ""),
+                "amount": amount,
+                "counterparty": counterparty,
+                "source_ref": {"layer": "std", "table": "std_bank_txn", "pk": {"std_id": int(row[0])}, "batch_id": batch_id},
+            }
+            # Direct card↔card edge: keeps same-name different people from collapsing.
+            if left_card and right_card:
+                add_edge(left_card, right_card, "bank_txn", amount=amount, record=record)
+            left_person = self._person_for_bank_acct(left_acct, person_by_identifier)
+            right_person = self._person_for_bank_acct(right_acct, person_by_identifier)
+            if left_person and right_person and left_person != right_person:
+                add_edge(left_person, right_person, "bank_txn", amount=amount, record=record)
 
     def _add_wechat_edges(self, batch_id: str, nodes: dict[str, ExploreNode], add_node: Any, add_edge: Any, person_by_name: dict[str, str], person_by_identifier: dict[tuple[str, str], str]) -> None:
         for table, raw_id, fields in self._fusion._iter_raw_rows(batch_id, "wechat"):
@@ -467,17 +569,17 @@ class GraphExploreService:
                 add_edge(ent_id, event_id, "commercial", amount=self._to_float(fields.get("中标金额") or fields.get("中标金额(元)") or fields.get("含税单价")), record={"record_type": "commercial", "summary": event, "source_ref": {"layer": "raw", "table": table, "pk": {"raw_id": raw_id}, "batch_id": batch_id}})
 
     def _person_or_bank(self, name: str, acct: str, person_by_name: dict[str, str], person_by_identifier: dict[tuple[str, str], str], add_node: Any) -> str:
-        name_norm = normalize_identifier("person_name", name)
+        """Account-first endpoint resolve; name is only used when no account is present."""
+        person_id = self._person_for_bank_acct(acct, person_by_identifier)
+        if person_id:
+            return person_id
         acct_norm = normalize_identifier("bank_acct", acct)
-        if name_norm in person_by_name:
-            return person_by_name[name_norm]
-        if acct_norm and ("bank_acct", acct_norm) in person_by_identifier:
-            return person_by_identifier[("bank_acct", acct_norm)]
-        if acct_norm and ("bank_card", acct_norm) in person_by_identifier:
-            return person_by_identifier[("bank_card", acct_norm)]
         if acct_norm:
             add_node(f"bank_card:{acct_norm}", acct or name or acct_norm, "bank_card")
             return f"bank_card:{acct_norm}"
+        name_norm = normalize_identifier("person_name", name)
+        if name_norm in person_by_name:
+            return person_by_name[name_norm]
         if name_norm:
             add_node(f"person_name:{name_norm}", name, "unknown")
             return f"person_name:{name_norm}"
@@ -508,12 +610,117 @@ class GraphExploreService:
                 return node_id
         if value in nodes:
             return value
+        if kind in {"bank", "bank_card", "bank_acct", "card"}:
+            digits = normalize_identifier("bank_acct", value)
+            candidates = [
+                f"bank_card:{value}",
+                f"bank_acct:{value}",
+                f"bank_card:{digits}",
+                f"bank_acct:{digits}",
+            ]
+            for candidate in candidates:
+                if candidate in nodes:
+                    return candidate
+            # Scoped norms like 建设银行|3328134432 are stored as node ids; match by account digits.
+            if digits:
+                for node_id in nodes:
+                    if not node_id.startswith(("bank_card:", "bank_acct:")):
+                        continue
+                    node_norm = node_id.split(":", 1)[1]
+                    _, stored_acct = split_scoped_bank_account(node_norm)
+                    if stored_acct == digits or node_norm == digits or node_norm.endswith(digits):
+                        return node_id
+            return ""
         norm = normalize_phone(value) if kind == "phone" else normalize_identifier(kind, value)
         candidates = [f"{kind}:{norm}", f"person_name:{norm}", f"wechat:{norm}", f"bank_card:{norm}"]
         return next((c for c in candidates if c in nodes), "")
 
+    def _backfill_bank_card_txn_edge(
+        self,
+        case_id: int,
+        batch_ids: list[str],
+        left_id: str,
+        right_id: str,
+        all_nodes: dict[str, ExploreNode],
+        visible_nodes: dict[str, ExploreNode],
+        visible_edges: dict[str, ExploreEdge],
+    ) -> None:
+        """When dual bank-card anchors have no path, inject matching std_bank_txn edges."""
+        left_digits = self._bank_digits_from_node_id(left_id)
+        right_digits = self._bank_digits_from_node_id(right_id)
+        if not left_digits or not right_digits or left_digits == right_digits or not batch_ids:
+            return
+        placeholders = ",".join("?" for _ in batch_ids)
+        rows = self._client.query_all(
+            f"""
+            SELECT std_id, person_name, acct_no, txn_time, txn_amount, txn_direction,
+                   counterparty_name, counterparty_account, summary, import_batch_id
+            FROM std_bank_txn
+            WHERE import_batch_id IN ({placeholders})
+              AND (
+                (REPLACE(REPLACE(REPLACE(acct_no,'*',''),' ',''),'-','') LIKE ?
+                 AND REPLACE(REPLACE(REPLACE(counterparty_account,'*',''),' ',''),'-','') LIKE ?)
+                OR
+                (REPLACE(REPLACE(REPLACE(acct_no,'*',''),' ',''),'-','') LIKE ?
+                 AND REPLACE(REPLACE(REPLACE(counterparty_account,'*',''),' ',''),'-','') LIKE ?)
+              )
+            LIMIT 50;
+            """,
+            (*batch_ids, f"%{left_digits}", f"%{right_digits}", f"%{right_digits}", f"%{left_digits}"),
+        )
+        if not rows:
+            return
+        for node_id in (left_id, right_id):
+            if node_id not in visible_nodes and node_id in all_nodes:
+                node = self._clone_node(all_nodes[node_id])
+                node.depth = 0
+                visible_nodes[node_id] = node
+            elif node_id not in visible_nodes:
+                visible_nodes[node_id] = ExploreNode(id=node_id, label=node_id.split(":", 1)[-1], type="bank_card", depth=0)
+
+        edge_id = f"bank_txn:{':'.join(sorted([left_id, right_id]))}"
+        edge = visible_edges.get(edge_id)
+        if edge is None:
+            a, b = sorted([left_id, right_id])
+            edge = ExploreEdge(id=edge_id, source=a, target=b, type="bank_txn", amount=0.0, weight=0, record_count=0)
+            visible_edges[edge_id] = edge
+        for row in rows:
+            amount = self._to_float(row[4])
+            edge.weight += 1
+            edge.record_count += 1
+            if amount is not None:
+                edge.amount = round((edge.amount or 0.0) + abs(amount), 2)
+            if len(edge.sample_records) < 5:
+                edge.sample_records.append(
+                    {
+                        "record_type": "bank_txn",
+                        "time": str(row[3] or ""),
+                        "summary": str(row[8] or ""),
+                        "amount": amount,
+                        "counterparty": str(row[6] or row[7] or ""),
+                        "source_ref": {
+                            "layer": "std",
+                            "table": "std_bank_txn",
+                            "pk": {"std_id": int(row[0])},
+                            "batch_id": str(row[9] or ""),
+                        },
+                    }
+                )
+
+    @staticmethod
+    def _bank_digits_from_node_id(node_id: str) -> str:
+        if ":" not in node_id:
+            return normalize_identifier("bank_acct", node_id)
+        norm = node_id.split(":", 1)[1]
+        _, digits = split_scoped_bank_account(norm)
+        return digits or normalize_identifier("bank_acct", norm)
+
     def _find_paths(self, anchors: list[str], edges: dict[str, ExploreEdge], max_depth: int) -> list[dict[str, Any]]:
-        """Find anchor-to-anchor paths where every hop uses the same relation type."""
+        """Find anchor-to-anchor paths.
+
+        Prefer same relation type on every hop. Identifier edges are treated as transparent
+        glue so card→person→card style hops can still surface a business relation type.
+        """
         start, target = anchors[0], anchors[1]
         adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
         edge_map = {edge.id: edge for edge in edges.values()}
@@ -531,12 +738,23 @@ class GraphExploreService:
                 if nxt in path_nodes:
                     continue
                 edge = edge_map[edge_id]
-                if path_type is not None and edge.type != path_type:
+                if edge.type == "identifier":
+                    # Transparent hop: keep current business relation type unchanged.
+                    next_type = path_type
+                elif path_type is not None and edge.type != path_type:
                     continue
-                next_type = path_type or edge.type
+                else:
+                    next_type = path_type or edge.type
                 next_nodes = path_nodes + [nxt]
                 next_edges = path_edges + [edge_id]
                 if nxt == target:
+                    # Require at least one non-identifier hop for a meaningful path.
+                    relation_types = [
+                        edge_map[eid].type for eid in next_edges if edge_map[eid].type != "identifier"
+                    ]
+                    if not relation_types:
+                        continue
+                    primary = next_type or relation_types[0]
                     found_raw.append(
                         {
                             "source_anchor": start,
@@ -544,7 +762,7 @@ class GraphExploreService:
                             "length": len(next_edges),
                             "nodes": next_nodes,
                             "edges": next_edges,
-                            "relation_types": [next_type],
+                            "relation_types": [primary],
                         }
                     )
                 else:

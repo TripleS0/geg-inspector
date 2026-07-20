@@ -160,6 +160,11 @@ class FusionTests(unittest.TestCase):
 
         suggestions = self.fusion_uc.suggest_anchors(case.case_id, "6217", limit=10)
         self.assertTrue(any("6217" in item["display_value"] or "6217" in item["identifier_norm"] for item in suggestions["items"]))
+        bank_suggestions = self.fusion_uc.suggest_anchors(case.case_id, "6217", limit=10, anchor_type="bank_card")
+        self.assertTrue(
+            any(item["identifier_type"] in {"bank_card", "bank_acct"} for item in bank_suggestions["items"]),
+            bank_suggestions["items"],
+        )
 
     def test_anchor_cockpit_enterprise_and_commercial(self) -> None:
         batch_ent = "batch-ent-anchor"
@@ -587,6 +592,66 @@ class FusionTests(unittest.TestCase):
 
         svc = FusionQueryService(self.client)
         self.assertEqual(svc._raw_field({"交易金额_分": "12345"}, "交易金额(分)"), "12345")
+
+    def test_graph_explore_same_name_bank_cards_have_txn_path(self) -> None:
+        """同名不同身份证的两张卡，应能通过 bank_txn 直连出路径（不因姓名塌缩）。"""
+        batch_id = "batch-graph-same-name-cards"
+        self.client.execute(
+            "INSERT INTO meta_bank_files (file_name, file_path, file_hash, bank_name, source_type, import_batch_id, status)"
+            " VALUES ('bank.xlsx', '/tmp/bank-graph.xlsx', 'graph-same-name', '建设银行', 'bank', ?, 'imported');",
+            (batch_id,),
+        )
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_account(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, id_no, source_name, raw_payload
+            ) VALUES (?, ?, '开户信息', 'fp', '李**', ?, ?, 'src', '{}');
+            """,
+            [
+                (batch_id, "建设银行", "3328134432", "440106********1111"),
+                (batch_id, "工商银行", "6222087735", "440106********2222"),
+            ],
+        )
+        self.client.executemany(
+            """
+            INSERT INTO std_bank_txn(
+                import_batch_id, bank_name, source_sheet, template_fingerprint,
+                person_name, acct_no, txn_time, txn_amount, txn_direction,
+                counterparty_name, counterparty_account, summary, raw_payload
+            ) VALUES (?, '建设银行', '交易明细', 'fp', '李**', '332813*********4432',
+                      ?, ?, ?, '李**', '622208*********7735', ?, '{}');
+            """,
+            [
+                (batch_id, "2012-05-31 15:36:57", "2590.00", "收入", "转帐存入"),
+                (batch_id, "2012-09-24 22:46:00", "30000.00", "支出", "转帐支取"),
+                (batch_id, "2012-11-19 14:40:30", "30000.00", "收入", "转帐存入"),
+            ],
+        )
+        case = self.case_uc.create_case(case_name="图谱同名卡路径")
+        self.case_uc.bind_batches(case.case_id, [batch_id])
+        self.fusion_uc.auto_link(case.case_id, rediscover=True)
+
+        persons = [p for p in self.fusion_uc.list_persons(case.case_id) if p["display_name"] == "李**"]
+        self.assertEqual(len(persons), 2)
+
+        graph = self.fusion_uc.explore_graph(
+            case.case_id,
+            {
+                "anchors": [
+                    {"type": "bank_card", "value": "3328134432"},
+                    {"type": "bank_card", "value": "6222087735"},
+                ],
+                "relation_types": ["bank_txn", "identifier"],
+                "display_level": 1,
+                "min_weight": 1,
+            },
+        )
+        self.assertGreaterEqual(graph["summary"]["path_count"], 1)
+        self.assertTrue(any("bank_txn" in (p.get("relation_types") or []) for p in graph["paths"]))
+        txn_edges = [e for e in graph["edges"] if e["type"] == "bank_txn"]
+        self.assertTrue(txn_edges)
+        self.assertGreaterEqual(max(e["record_count"] for e in txn_edges), 3)
 
 
 if __name__ == "__main__":
