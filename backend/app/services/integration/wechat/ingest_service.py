@@ -90,7 +90,7 @@ class WechatIngestService(BankIngestService):
                 continue
 
             file_hash = self._hash_file(path)
-            file_id = self._insert_file_record(import_batch_id, path, file_hash, bank_name, source_type)
+            file_id = self._insert_file_record(import_batch_id, path, file_hash, bank_name, "", source_type)
             sheet_name = "微信流水"
             raw_columns = [str(col).strip() for col in detail_df.columns]
             fingerprint = self._build_fingerprint(bank_name, source_type, sheet_name, raw_columns)

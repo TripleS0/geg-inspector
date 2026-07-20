@@ -55,10 +55,12 @@ class BankMappingService:
         """Write mapped raw records into std_bank_txn for one batch."""
         self._ensure_std_columns()
         self._ensure_meta_columns()
+        self.purge_export_notice_rows(import_batch_id)
         sheet_rows = self._client.query_all(
             """
-            SELECT DISTINCT s.template_fingerprint, s.raw_table_name, s.sheet_name, f.bank_name,
-                   COALESCE(r.template_type, 'txn_detail') AS template_type
+            SELECT s.template_fingerprint, s.raw_table_name, s.sheet_name, f.bank_name,
+                   COALESCE(s.template_type, r.template_type, 'txn_detail') AS template_type,
+                   s.file_id, COALESCE(s.template_snapshot_json, '{}')
             FROM meta_bank_sheets
             s JOIN meta_bank_files f ON f.file_id=s.file_id
               LEFT JOIN meta_schema_registry r ON r.template_fingerprint=s.template_fingerprint
@@ -68,19 +70,46 @@ class BankMappingService:
         )
 
         inserted = 0
-        for template_fingerprint, raw_table_name, sheet_name, bank_name, template_type in sheet_rows:
+        for template_fingerprint, raw_table_name, sheet_name, bank_name, template_type, file_id, snapshot_json in sheet_rows:
             sheet_type = str(template_type or infer_sheet_purpose(str(sheet_name)))
-            self.seed_default_mappings(str(template_fingerprint), str(bank_name), str(sheet_name), sheet_type)
+            snapshot = snapshot_json if isinstance(snapshot_json, dict) else json.loads(str(snapshot_json or "{}"))
+            if not snapshot.get("field_map"):
+                self.seed_default_mappings(str(template_fingerprint), str(bank_name), str(sheet_name), sheet_type)
             if sheet_type == "account_profile":
                 inserted += self._standardize_account_table(
-                    import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name)
+                    import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name),
+                    source_file_id=int(file_id), template_snapshot=snapshot,
                 )
                 continue
             inserted += self._standardize_table(
-                import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name)
+                import_batch_id, str(template_fingerprint), str(raw_table_name), str(sheet_name), str(bank_name),
+                source_file_id=int(file_id), template_snapshot=snapshot,
             )
         self._enrich_person_names(import_batch_id)
+        self.purge_export_notice_rows(import_batch_id)
         return inserted
+
+    def purge_export_notice_rows(self, import_batch_id: str) -> int:
+        """Remove old export footers accidentally standardized as bank transactions."""
+        text = (
+            "COALESCE(person_name, '') || ' ' || COALESCE(acct_no, '') || ' ' || "
+            "COALESCE(summary, '') || ' ' || COALESCE(remark, '')"
+        )
+        with self._client.transaction() as cursor:
+            cursor.execute(
+                f"""
+                DELETE FROM std_bank_txn
+                WHERE import_batch_id=?
+                  AND ({text} LIKE '%数据截至%')
+                  AND (
+                    {text} LIKE '%非实时数据%'
+                    OR {text} LIKE '%生产系统为准%'
+                    OR {text} LIKE '%综合查控平台%'
+                  );
+                """,
+                (import_batch_id,),
+            )
+            return max(0, int(cursor.rowcount))
 
     def seed_default_mappings(
         self, template_fingerprint: str, bank_name: str, sheet_name: str, template_type: str = "txn_detail"
@@ -105,6 +134,8 @@ class BankMappingService:
         schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
         columns = [str(col) for col in schema_dict.get("columns", [])]
 
+        # Prefer the bank + file/Sheet template. Several banks share generic
+        # headers such as "客户账号" and "交易金额"; headers are only a fallback.
         template = match_template(bank_name, sheet_name, sheet_type=template_type, client=self._client)
         if template is None:
             template = match_template_by_columns(columns, sheet_type=template_type, client=self._client)
@@ -113,7 +144,8 @@ class BankMappingService:
                 col = find_column(columns, aliases)
                 if col:
                     self.save_mapping(template_fingerprint, col, std_field, template_type, "identity", 10)
-            return
+            if template_type != "account_profile":
+                return
 
         keyword_to_std = self._keyword_to_std(template_type)
         # 长关键词优先，避免「账号」误匹配「账号对应卡号」「账号类型」等列
@@ -189,50 +221,61 @@ class BankMappingService:
         raw_table_name: str,
         sheet_name: str,
         bank_name: str,
+        source_file_id: int | None = None,
+        template_snapshot: dict[str, Any] | None = None,
     ) -> int:
         """Standardize one template table by mapping rules."""
-        mapping_rows = self._client.query_all(
-            """
-            SELECT raw_field_name, std_field_name
-            FROM meta_field_mapping
-            WHERE template_fingerprint=? AND is_active=1
-            ORDER BY priority ASC;
-            """,
-            (template_fingerprint,),
-        )
+        mapping_rows = [(source, std) for std, source in (template_snapshot or {}).get("field_map", {}).items()]
+        if not mapping_rows:
+            mapping_rows = self._client.query_all(
+                """
+                SELECT raw_field_name, std_field_name
+                FROM meta_field_mapping
+                WHERE template_fingerprint=? AND is_active=1
+                ORDER BY priority ASC;
+                """,
+                (template_fingerprint,),
+            )
         if not mapping_rows:
             return 0
 
+        filter_sql = "import_batch_id=?"
+        filter_params: tuple[Any, ...] = (import_batch_id,)
+        if source_file_id is not None:
+            filter_sql += " AND source_file_id=? AND source_sheet=?"
+            filter_params = (import_batch_id, source_file_id, sheet_name)
         raw_rows = self._client.query_all(
             f"""
             SELECT import_batch_id, bank_name, source_file_id, source_sheet, template_fingerprint, raw_payload
             FROM "{raw_table_name}"
-            WHERE import_batch_id=?;
+            WHERE {filter_sql};
             """,
-            (import_batch_id,),
+            filter_params,
         )
         if not raw_rows:
             return 0
 
-        template = match_template(bank_name, sheet_name, sheet_type="txn_detail", client=self._client)
-        header_bank_name = bank_name
-        if template is None:
-            schema_rows = self._client.query_all(
-                "SELECT schema_json FROM meta_schema_registry WHERE template_fingerprint=? LIMIT 1;",
-                (template_fingerprint,),
+        schema_rows = self._client.query_all(
+            "SELECT schema_json FROM meta_schema_registry WHERE template_fingerprint=? LIMIT 1;",
+            (template_fingerprint,),
+        )
+        schema_columns: list[str] = []
+        if schema_rows:
+            schema_json = schema_rows[0][0]
+            schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
+            schema_columns = [str(col) for col in schema_dict.get("columns", [])]
+        template = None if template_snapshot else match_template(bank_name, sheet_name, sheet_type="txn_detail", client=self._client)
+        if template is None and schema_columns and not template_snapshot:
+            template = match_template_by_columns(
+                schema_columns, sheet_type="txn_detail", client=self._client
             )
-            if schema_rows:
-                schema_json = schema_rows[0][0]
-                schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
-                schema_columns = [str(col) for col in schema_dict.get("columns", [])]
-                template = match_template_by_columns(
-                    schema_columns, sheet_type="txn_detail", client=self._client
-                )
-                header_bank_name = infer_bank_name_by_columns(
-                    schema_columns, fallback=bank_name, sheet_type="txn_detail", client=self._client
-                )
-        direction_rules: dict[str, str] = {}
-        datetime_rules: dict[str, Any] | None = None
+        header_bank_name = bank_name
+        if schema_columns and not template_snapshot:
+            header_bank_name = infer_bank_name_by_columns(
+                schema_columns, fallback=bank_name, sheet_type="txn_detail", client=self._client
+            )
+        direction_rules: dict[str, str] = dict((template_snapshot or {}).get("direction_rules") or (template.direction_rules if template else {}) or {})
+        datetime_rules: dict[str, Any] | None = (template_snapshot or {}).get("datetime_patterns") or (template.datetime_patterns if template else None)
         if template is not None and template.user_template_id:
             direction_rules, datetime_rules = UserBankTemplateRepository(self._client).get_transform_rules(
                 template.user_template_id
@@ -260,7 +303,21 @@ class BankMappingService:
             }
             for raw_field, std_field in mapping_rows:
                 if std_field in std_fields and raw_field in payload_dict:
-                    std_fields[std_field] = str(payload_dict[raw_field])
+                    value = str(payload_dict[raw_field])
+                    # Prefer the first non-empty candidate, so an empty
+                    # primary account field cannot erase a valid fallback
+                    # such as "核算账号".
+                    if std_field == "acct_no":
+                        if value.strip() and not str(std_fields[std_field] or "").strip():
+                            std_fields[std_field] = value
+                    else:
+                        std_fields[std_field] = value
+
+            # ABC exports contain both a customer account and an internal
+            # accounting account. Only the value in this row's 客户账号 column
+            # is the owner account shown by the product; blank stays blank.
+            if template is not None and template.template_id in {"abc_txn_v1", "abc_corp_txn_v1"}:
+                std_fields["acct_no"] = str(payload_dict.get("客户账号") or "").strip()
 
             txn_time = self._normalize_txn_time_extended(
                 std_fields.get("txn_date"), std_fields.get("txn_time_raw"), datetime_rules
@@ -339,32 +396,63 @@ class BankMappingService:
         raw_table_name: str,
         sheet_name: str,
         bank_name: str,
+        source_file_id: int | None = None,
+        template_snapshot: dict[str, Any] | None = None,
     ) -> int:
         """Standardize one account profile table into std_bank_account."""
-        mapping_rows = self._client.query_all(
-            """
-            SELECT raw_field_name, std_field_name
-            FROM meta_field_mapping
-            WHERE template_fingerprint=? AND is_active=1
-              AND (template_type='account_profile' OR std_field_name IN ('person_name','acct_no','id_no','mobile','open_date'))
-            ORDER BY priority ASC;
-            """,
-            (template_fingerprint,),
-        )
+        mapping_rows = [(source, std) for std, source in (template_snapshot or {}).get("field_map", {}).items()]
+        if not mapping_rows:
+            mapping_rows = self._client.query_all(
+                """
+                SELECT raw_field_name, std_field_name
+                FROM meta_field_mapping
+                WHERE template_fingerprint=? AND is_active=1
+                  AND (template_type='account_profile' OR std_field_name IN ('person_name','acct_no','id_no','mobile','open_date'))
+                ORDER BY priority ASC;
+                """,
+                (template_fingerprint,),
+            )
         if not mapping_rows:
             return 0
+        filter_sql = "import_batch_id=?"
+        filter_params: tuple[Any, ...] = (import_batch_id,)
+        if source_file_id is not None:
+            filter_sql += " AND source_file_id=? AND source_sheet=?"
+            filter_params = (import_batch_id, source_file_id, sheet_name)
         raw_rows = self._client.query_all(
             f"""
             SELECT import_batch_id, bank_name, source_file_id, source_sheet, template_fingerprint, raw_payload
             FROM "{raw_table_name}"
-            WHERE import_batch_id=?;
+            WHERE {filter_sql};
             """,
-            (import_batch_id,),
+            filter_params,
         )
         if not raw_rows:
             return 0
-        acct_tpl = match_template(bank_name, sheet_name, sheet_type="account_profile", client=self._client)
-        dt_rules_acct: dict[str, Any] | None = None
+        schema_rows = self._client.query_all(
+            "SELECT schema_json FROM meta_schema_registry WHERE template_fingerprint=? LIMIT 1;",
+            (template_fingerprint,),
+        )
+        schema_columns: list[str] = []
+        if schema_rows:
+            schema_json = schema_rows[0][0]
+            schema_dict = schema_json if isinstance(schema_json, dict) else json.loads(schema_json)
+            schema_columns = [str(col) for col in schema_dict.get("columns", [])]
+        column_acct_tpl = None if template_snapshot else match_template_by_columns(
+            schema_columns, sheet_type="account_profile", client=self._client
+        ) if schema_columns else None
+        named_acct_tpl = None if template_snapshot else match_template(
+            bank_name, sheet_name, sheet_type="account_profile", client=self._client
+        )
+        explicit_bank_key = self._normalize_bank_key(bank_name)
+        named_bank_key = self._normalize_bank_key(
+            named_acct_tpl.bank_display_name if named_acct_tpl is not None else ""
+        )
+        if named_acct_tpl is not None and explicit_bank_key == named_bank_key:
+            acct_tpl = named_acct_tpl
+        else:
+            acct_tpl = column_acct_tpl or named_acct_tpl
+        dt_rules_acct: dict[str, Any] | None = (template_snapshot or {}).get("datetime_patterns")
         if acct_tpl is not None and acct_tpl.user_template_id:
             _, dt_rules_acct = UserBankTemplateRepository(self._client).get_transform_rules(
                 acct_tpl.user_template_id
@@ -394,36 +482,53 @@ class BankMappingService:
                 if fields[std_field]:
                     continue
                 fields[std_field] = value
-            if acct_candidates:
-                acct_candidates.sort(key=lambda x: x[0], reverse=True)
-                fields["acct_no"] = acct_candidates[0][1]
-            acct_no = self._normalize_acct_no(fields["acct_no"].strip())
-            if not acct_no:
+            if acct_tpl is not None and acct_tpl.template_id.startswith("abc_"):
+                customer_account = self._normalize_acct_no(str(payload_dict.get("客户账号") or ""))
+                acct_candidates = (
+                    [(self._acct_field_priority("客户账号"), customer_account)]
+                    if customer_account and self._looks_like_acct_no(customer_account)
+                    else []
+                )
+            unique_accounts: list[str] = []
+            seen_accounts: set[str] = set()
+            for _priority, candidate in sorted(acct_candidates, key=lambda x: x[0], reverse=True):
+                acct_no = self._normalize_acct_no(candidate)
+                if not acct_no or acct_no in seen_accounts:
+                    continue
+                seen_accounts.add(acct_no)
+                unique_accounts.append(acct_no)
+            if not unique_accounts:
                 continue
             source_name = self._build_source_name(row[2], row[3], raw_table_name)
             open_date = self._normalize_txn_time_extended(fields.get("open_date"), None, dt_rules_acct)
-            mapped_records.append(
-                (
-                    row[0],
-                    infer_bank_name_by_columns(
-                        list(payload_dict.keys()),
-                        fallback=str(row[1] or bank_name),
-                        sheet_type="account_profile",
-                        client=self._client,
-                    ),
-                    row[2],
-                    str(row[3] or sheet_name),
-                    row[4],
-                    "bank",
-                    fields["person_name"],
-                    acct_no,
-                    fields["id_no"],
-                    fields["mobile"],
-                    open_date,
-                    source_name,
-                    json.dumps(payload_dict, ensure_ascii=False),
+            resolved_bank_name = (
+                acct_tpl.bank_display_name
+                if acct_tpl is not None and acct_tpl.bank_display_name
+                else infer_bank_name_by_columns(
+                    schema_columns or list(payload_dict.keys()),
+                    fallback=str(row[1] or bank_name),
+                    sheet_type="account_profile",
+                    client=self._client,
                 )
             )
+            for acct_no in unique_accounts:
+                mapped_records.append(
+                    (
+                        row[0],
+                        resolved_bank_name,
+                        row[2],
+                        str(row[3] or sheet_name),
+                        row[4],
+                        "bank",
+                        fields["person_name"],
+                        acct_no,
+                        fields["id_no"],
+                        fields["mobile"],
+                        open_date,
+                        source_name,
+                        json.dumps(payload_dict, ensure_ascii=False),
+                    )
+                )
         if not mapped_records:
             return 0
         self._client.executemany(
@@ -491,46 +596,49 @@ class BankMappingService:
         )
         unique_rows = self._client.query_all(
             """
-            SELECT acct_no, MAX(person_name) AS person_name
+            SELECT bank_name, acct_no, MAX(person_name) AS person_name
             FROM std_bank_account
             WHERE import_batch_id=? AND person_name IS NOT NULL AND TRIM(person_name) <> ''
-            GROUP BY acct_no
+            GROUP BY bank_name, acct_no
             HAVING COUNT(DISTINCT person_name)=1;
             """,
             (import_batch_id,),
         )
-        exact_map: dict[str, str] = {}
-        key_map: dict[str, str] = {}
-        for acct_no, person_name in unique_rows:
+        exact_map: dict[tuple[str, str], str] = {}
+        key_map: dict[tuple[str, str], str] = {}
+        for bank_name, acct_no, person_name in unique_rows:
+            bank_key = self._normalize_bank_key(str(bank_name or ""))
             acct = self._normalize_acct_no(str(acct_no or ""))
             name = str(person_name or "").strip()
-            if not acct or not name:
+            if not bank_key or not acct or not name:
                 continue
-            exact_map[acct] = name
+            exact_map[(bank_key, acct)] = name
             key = self._acct_match_key(acct)
             if key:
-                if key in key_map and key_map[key] != name:
-                    key_map[key] = ""
+                scoped_key = (bank_key, key)
+                if scoped_key in key_map and key_map[scoped_key] != name:
+                    key_map[scoped_key] = ""
                 else:
-                    key_map[key] = name
+                    key_map[scoped_key] = name
 
         txn_rows = self._client.query_all(
             """
-            SELECT std_id, acct_no
+            SELECT std_id, bank_name, acct_no
             FROM std_bank_txn
             WHERE import_batch_id=?
               AND (person_name IS NULL OR TRIM(person_name)='');
             """,
             (import_batch_id,),
         )
-        for std_id, acct_no in txn_rows:
+        for std_id, bank_name, acct_no in txn_rows:
+            bank_key = self._normalize_bank_key(str(bank_name or ""))
             acct = self._normalize_acct_no(str(acct_no or ""))
-            if not acct:
+            if not bank_key or not acct:
                 continue
-            name = exact_map.get(acct, "")
+            name = exact_map.get((bank_key, acct), "")
             if not name:
                 key = self._acct_match_key(acct)
-                name = key_map.get(key, "") if key else ""
+                name = key_map.get((bank_key, key), "") if key else ""
             if not name:
                 continue
             self._client.execute(
@@ -654,12 +762,24 @@ class BankMappingService:
             raw = f"{date_text} {time_text.replace('.', ':')}"
         if date_text and time_text and len(date_text) <= 10 and "-" in time_text and ":" not in time_text:
             raw = f"{date_text} {time_text}"
+        if (
+            date_text
+            and time_text
+            and date_text.isdigit()
+            and len(date_text) == 8
+            and time_text.isdigit()
+            and len(time_text) == 6
+        ):
+            raw = f"{date_text}{time_text}"
         raw = raw.replace("/", "-").replace("T", " ")
         for fmt in (
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d %H:%M",
             "%Y-%m-%d-%H-%M-%S",
+            "%Y-%m-%d-%H.%M.%S.%f",
+            "%Y-%m-%d-%H.%M.%S",
             "%Y-%m-%d",
+            "%Y%m%d %H:%M:%S",
             "%Y%m%d%H%M%S",
             "%Y%m%d",
         ):
@@ -696,6 +816,10 @@ class BankMappingService:
             if head.isdigit():
                 return head
         return text
+
+    @staticmethod
+    def _normalize_bank_key(value: str) -> str:
+        return "".join((value or "").strip().lower().split())
 
     @staticmethod
     def _clean_cell_text(value: str) -> str:
@@ -760,10 +884,6 @@ class BankMappingService:
     ) -> bool:
         """Skip bank export title/footer/disclaimer rows that are not transaction details."""
         acct = self._normalize_acct_no(std_fields.get("acct_no"))
-        has_key_txn_value = bool(acct or (txn_time or "").strip() or (txn_amount or "").strip())
-        if has_key_txn_value:
-            return False
-
         text_values = [self._clean_cell_text(str(v)) for v in payload_dict.values() if str(v).strip()]
         if not text_values:
             return True
@@ -778,8 +898,15 @@ class BankMappingService:
             "仅供参考",
             "查询结果",
         )
-        if any(token in blob for token in disclaimer_tokens):
+        strong_notice_hits = sum(
+            token in blob
+            for token in ("数据截至", "非实时数据", "生产系统为准", "综合查控平台")
+        )
+        if strong_notice_hits >= 2:
             return True
+        has_key_txn_value = bool(acct or (txn_time or "").strip() or (txn_amount or "").strip())
+        if has_key_txn_value:
+            return False
         # Long text-only rows without account/time/amount are usually sheet titles or explanations.
         return len(blob) >= 28
 

@@ -43,6 +43,7 @@ function CaseManagePage() {
   const [caseDetail, setCaseDetail] = useState<CaseInfo | null>(null);
   const [unbound, setUnbound] = useState<BatchInfo[]>([]);
   const [selectedBatchIds, setSelectedBatchIds] = useState<string[]>([]);
+  const [selectedCaseIds, setSelectedCaseIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm] = Form.useForm<{ case_name: string; description: string }>();
@@ -60,6 +61,7 @@ function CaseManagePage() {
     try {
       const data = await api.listCases();
       setCases(data.items);
+      setSelectedCaseIds((prev) => prev.filter((id) => data.items.some((item) => item.case_id === id)));
       const nextId = resolveSelectedCaseId(data.items, selectedCaseIdRef.current);
       setSelectedCaseId(nextId);
       selectedCaseIdRef.current = nextId;
@@ -182,11 +184,38 @@ function CaseManagePage() {
     try {
       await api.deleteCase(caseId);
       message.success("案件已删除");
+      setSelectedCaseIds((prev) => prev.filter((id) => id !== caseId));
       if (selectedCaseId === caseId) selectCase(null);
       await refreshCases();
     } catch (err) {
       message.error((err as Error).message);
     }
+  };
+
+  const deleteSelectedCases = () => {
+    if (!selectedCaseIds.length) return;
+    Modal.confirm({
+      title: `确认删除 ${selectedCaseIds.length} 个案件？`,
+      content: "将删除所选案件及对应的人物库、人物关联和案件绑定关系。导入批次本身不会被删除。不可恢复。",
+      okText: "删除选中案件",
+      okType: "danger",
+      cancelText: "取消",
+      onOk: async () => {
+        try {
+          for (const caseId of selectedCaseIds) {
+            await api.deleteCase(caseId);
+          }
+          message.success(`已删除 ${selectedCaseIds.length} 个案件`);
+          if (selectedCaseId && selectedCaseIds.includes(selectedCaseId)) {
+            selectCase(null);
+          }
+          setSelectedCaseIds([]);
+          await refreshCases();
+        } catch (err) {
+          message.error((err as Error).message);
+        }
+      },
+    });
   };
 
   const boundColumns = useMemo(
@@ -253,6 +282,9 @@ function CaseManagePage() {
           <Button type="primary" onClick={() => setCreateOpen(true)}>
             新建案件
           </Button>
+          <Button danger disabled={!selectedCaseIds.length} onClick={deleteSelectedCases}>
+            删除选中案件（{selectedCaseIds.length}）
+          </Button>
           {selectedCaseId && (
             <>
               <Button onClick={() => void discover()}>扫描候选标识</Button>
@@ -285,6 +317,10 @@ function CaseManagePage() {
         size="small"
         loading={loading}
         dataSource={cases}
+        rowSelection={{
+          selectedRowKeys: selectedCaseIds,
+          onChange: (keys) => setSelectedCaseIds(keys.map((key) => Number(key))),
+        }}
         pagination={{ pageSize: 8 }}
         rowClassName={(row) => (row.case_id === selectedCaseId ? "case-row-selected" : "")}
         onRow={(row) => ({

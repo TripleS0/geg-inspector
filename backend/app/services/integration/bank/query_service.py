@@ -9,8 +9,13 @@ from typing import Any
 from app.services.shared.db.sqlite_client import SqliteClient
 
 
+UNKNOWN_PERSON_NAME = "姓名未知"
+UNKNOWN_PERSON_ID_PREFIX = "__unknown__|"
+
+
 @dataclass
 class BankQueryFilters:
+    quick_query: str = ""
     bank_type: str = ""
     person_name: str = ""
     acct_no: str = ""
@@ -54,27 +59,26 @@ class BankQueryService:
                 t.remark AS remark
             FROM std_bank_txn t
             LEFT JOIN (
-                SELECT acct_no, MAX(person_name) AS person_name
+                SELECT import_batch_id, bank_name, acct_no, MAX(person_name) AS person_name
                 FROM std_bank_account
                 WHERE person_name IS NOT NULL AND TRIM(person_name) <> ''
-                GROUP BY acct_no
+                GROUP BY import_batch_id, bank_name, acct_no
                 HAVING COUNT(DISTINCT person_name)=1
-            ) a ON a.acct_no=t.acct_no
+            ) a ON a.import_batch_id=t.import_batch_id
+               AND a.bank_name=t.bank_name
+               AND a.acct_no=t.acct_no
             WHERE t.import_batch_id=?
               AND NOT (
-                TRIM(COALESCE(t.acct_no, ''))=''
-                AND TRIM(COALESCE(t.txn_time, ''))=''
-                AND TRIM(COALESCE(t.txn_amount, ''))=''
-                AND (
-                  COALESCE(t.person_name, '') LIKE '%数据截至%'
-                  OR COALESCE(t.person_name, '') LIKE '%非实时数据%'
-                  OR COALESCE(t.person_name, '') LIKE '%生产系统为准%'
-                  OR COALESCE(t.person_name, '') LIKE '%综合查控平台%'
-                  OR COALESCE(t.summary, '') LIKE '%数据截至%'
-                  OR COALESCE(t.summary, '') LIKE '%非实时数据%'
-                  OR COALESCE(t.remark, '') LIKE '%数据截至%'
-                  OR COALESCE(t.remark, '') LIKE '%非实时数据%'
-                )
+                COALESCE(t.person_name, '') LIKE '%数据截至%'
+                OR COALESCE(t.acct_no, '') LIKE '%数据截至%'
+                OR COALESCE(t.acct_no, '') LIKE '%生产系统为准%'
+                OR COALESCE(t.person_name, '') LIKE '%非实时数据%'
+                OR COALESCE(t.person_name, '') LIKE '%生产系统为准%'
+                OR COALESCE(t.person_name, '') LIKE '%综合查控平台%'
+                OR COALESCE(t.summary, '') LIKE '%数据截至%'
+                OR COALESCE(t.summary, '') LIKE '%非实时数据%'
+                OR COALESCE(t.remark, '') LIKE '%数据截至%'
+                OR COALESCE(t.remark, '') LIKE '%非实时数据%'
               )
             """
         ]
@@ -127,28 +131,27 @@ class BankQueryService:
                 TRIM(COALESCE(t.counterparty_account, '')) AS counterparty_account
             FROM std_bank_txn t
             LEFT JOIN (
-                SELECT acct_no, MAX(person_name) AS person_name
+                SELECT import_batch_id, bank_name, acct_no, MAX(person_name) AS person_name
                 FROM std_bank_account
                 WHERE import_batch_id=?
                   AND person_name IS NOT NULL
                   AND TRIM(person_name) <> ''
-                GROUP BY acct_no
-            ) a ON a.acct_no=t.acct_no
+                GROUP BY import_batch_id, bank_name, acct_no
+            ) a ON a.import_batch_id=t.import_batch_id
+               AND a.bank_name=t.bank_name
+               AND a.acct_no=t.acct_no
             WHERE t.import_batch_id=?
               AND NOT (
-                TRIM(COALESCE(t.acct_no, ''))=''
-                AND TRIM(COALESCE(t.txn_time, ''))=''
-                AND TRIM(COALESCE(t.txn_amount, ''))=''
-                AND (
-                  COALESCE(t.person_name, '') LIKE '%数据截至%'
-                  OR COALESCE(t.person_name, '') LIKE '%非实时数据%'
-                  OR COALESCE(t.person_name, '') LIKE '%生产系统为准%'
-                  OR COALESCE(t.person_name, '') LIKE '%综合查控平台%'
-                  OR COALESCE(t.summary, '') LIKE '%数据截至%'
-                  OR COALESCE(t.summary, '') LIKE '%非实时数据%'
-                  OR COALESCE(t.remark, '') LIKE '%数据截至%'
-                  OR COALESCE(t.remark, '') LIKE '%非实时数据%'
-                )
+                COALESCE(t.person_name, '') LIKE '%数据截至%'
+                OR COALESCE(t.acct_no, '') LIKE '%数据截至%'
+                OR COALESCE(t.acct_no, '') LIKE '%生产系统为准%'
+                OR COALESCE(t.person_name, '') LIKE '%非实时数据%'
+                OR COALESCE(t.person_name, '') LIKE '%生产系统为准%'
+                OR COALESCE(t.person_name, '') LIKE '%综合查控平台%'
+                OR COALESCE(t.summary, '') LIKE '%数据截至%'
+                OR COALESCE(t.summary, '') LIKE '%非实时数据%'
+                OR COALESCE(t.remark, '') LIKE '%数据截至%'
+                OR COALESCE(t.remark, '') LIKE '%非实时数据%'
               )
             """,
             (import_batch_id, import_batch_id),
@@ -173,6 +176,266 @@ class BankQueryService:
                 if text:
                     options[key].add(text)
         return {key: sorted(vals) for key, vals in options.items()}
+
+    def list_person_identities(self, import_batch_id: str) -> list[dict[str, Any]]:
+        rows = self._client.query_all(
+            """
+            SELECT TRIM(person_name), TRIM(id_no),
+                   COUNT(DISTINCT bank_name), COUNT(DISTINCT bank_name || '|' || acct_no),
+                   GROUP_CONCAT(DISTINCT acct_no)
+            FROM std_bank_account
+            WHERE import_batch_id=?
+              AND person_name IS NOT NULL AND TRIM(person_name)<>''
+              AND id_no IS NOT NULL AND TRIM(id_no)<>''
+            GROUP BY TRIM(person_name), TRIM(id_no)
+            ORDER BY TRIM(person_name), TRIM(id_no);
+            """,
+            (import_batch_id,),
+        )
+        identities = [
+            {
+                "person_name": str(row[0]),
+                "id_no": str(row[1]),
+                "bank_count": int(row[2]),
+                "account_count": int(row[3]),
+                "account_nos": sorted(
+                    {item.strip() for item in str(row[4] or "").split(",") if item.strip()}
+                ),
+            }
+            for row in rows
+        ]
+        identities.extend(self._unknown_person_identities(import_batch_id))
+        return identities
+
+    def _unknown_person_identities(self, import_batch_id: str) -> list[dict[str, Any]]:
+        account_rows = self._client.query_all(
+            """
+            SELECT DISTINCT bank_name, acct_no
+            FROM std_bank_account
+            WHERE import_batch_id=?
+              AND TRIM(COALESCE(person_name,''))=''
+              AND acct_no IS NOT NULL AND TRIM(acct_no)<>''
+            ORDER BY bank_name, acct_no;
+            """,
+            (import_batch_id,),
+        )
+        identities: list[dict[str, Any]] = []
+        for bank_name, acct_no in account_rows:
+            bank = str(bank_name or "").strip()
+            account = str(acct_no or "").strip()
+            identities.append(
+                {
+                    "person_name": UNKNOWN_PERSON_NAME,
+                    "id_no": f"{UNKNOWN_PERSON_ID_PREFIX}{bank}|{account}",
+                    "bank_count": 1,
+                    "account_count": 1,
+                    "account_nos": [account],
+                    "is_unknown": True,
+                    "unknown_bank": bank,
+                    "unknown_acct_no": account,
+                }
+            )
+        txn_rows = self._client.query_all(
+            """
+            SELECT DISTINCT bank_name, source_name
+            FROM std_bank_txn
+            WHERE import_batch_id=?
+              AND TRIM(COALESCE(person_name,'')) IN ('', '-', '未知')
+              AND TRIM(COALESCE(acct_no,'')) IN ('', '-', '未知')
+            ORDER BY bank_name, source_name;
+            """,
+            (import_batch_id,),
+        )
+        for bank_name, source_name in txn_rows:
+            bank = str(bank_name or "").strip()
+            source = str(source_name or "").strip()
+            identities.append(
+                {
+                    "person_name": UNKNOWN_PERSON_NAME,
+                    "id_no": f"{UNKNOWN_PERSON_ID_PREFIX}{bank}||{source}",
+                    "bank_count": 1,
+                    "account_count": 0,
+                    "account_nos": [],
+                    "is_unknown": True,
+                    "unknown_bank": bank,
+                    "unknown_acct_no": "",
+                    "unknown_source_name": source,
+                }
+            )
+        return identities
+
+    def summarize_person_funds(
+        self,
+        import_batch_id: str,
+        person_name: str,
+        id_no: str,
+    ) -> dict[str, Any]:
+        name = (person_name or "").strip()
+        identity = (id_no or "").strip()
+        is_unknown = identity.startswith(UNKNOWN_PERSON_ID_PREFIX)
+        if (not name or not identity) and not is_unknown:
+            raise ValueError("请选择姓名和身份证均明确的人物")
+
+        unknown_parts = identity.split("|") if is_unknown else []
+        unknown_bank = unknown_parts[1] if len(unknown_parts) > 1 else ""
+        unknown_acct_no = unknown_parts[2] if len(unknown_parts) > 2 else ""
+        if is_unknown and unknown_acct_no:
+            account_rows = self._client.query_all(
+                """
+                SELECT DISTINCT bank_name, acct_no
+                FROM std_bank_account
+                WHERE import_batch_id=? AND bank_name=? AND acct_no=?
+                  AND TRIM(COALESCE(person_name,''))=''
+                  AND acct_no IS NOT NULL AND TRIM(acct_no)<>''
+                ORDER BY bank_name, acct_no;
+                """,
+                (import_batch_id, unknown_bank, unknown_acct_no),
+            )
+        else:
+            account_rows = []
+            if not is_unknown:
+                account_rows = self._client.query_all(
+                    """
+                    SELECT DISTINCT bank_name, acct_no
+                    FROM std_bank_account
+                    WHERE import_batch_id=? AND TRIM(person_name)=? AND TRIM(id_no)=?
+                      AND acct_no IS NOT NULL AND TRIM(acct_no)<>''
+                    ORDER BY bank_name, acct_no;
+                    """,
+                    (import_batch_id, name, identity),
+                )
+        accounts = [
+            {"bank_type": str(row[0] or ""), "acct_no": str(row[1] or "")}
+            for row in account_rows
+        ]
+        if not accounts and not is_unknown:
+            return {
+                "identity": {"person_name": name, "id_no": identity},
+                "accounts": [],
+                "summary": {"txn_count": 0, "in_total": 0.0, "out_total": 0.0, "net_amount": 0.0},
+                "groups": [],
+                "organization_groups": [],
+                "records": [],
+            }
+
+        params: list[Any] = [import_batch_id]
+        if is_unknown and unknown_acct_no:
+            conditions = """
+                t.bank_name=? AND t.acct_no=?
+            """
+            params.extend([unknown_bank, unknown_acct_no])
+        elif is_unknown:
+            conditions = """
+                t.bank_name=?
+                AND TRIM(COALESCE(t.source_name,''))=?
+                AND TRIM(COALESCE(t.person_name,'')) IN ('', '-', '未知')
+                AND TRIM(COALESCE(t.acct_no,'')) IN ('', '-', '未知')
+            """
+            params.extend([unknown_bank, unknown_parts[3] if len(unknown_parts) > 3 else ""])
+        else:
+            conditions = " OR ".join("(t.bank_name=? AND t.acct_no=?)" for _ in accounts)
+            for account in accounts:
+                params.extend([account["bank_type"], account["acct_no"]])
+        rows = self._client.query_all(
+            f"""
+            SELECT t.source_name, t.bank_name, t.acct_no, t.txn_time, t.txn_direction,
+                   COALESCE(NULLIF(t.currency, ''), 'CNY'), t.txn_amount, t.balance,
+                   t.counterparty_name, t.counterparty_account, t.summary, t.remark
+            FROM std_bank_txn t
+            WHERE t.import_batch_id=? AND ({conditions})
+            ORDER BY t.txn_time, t.std_id;
+            """,
+            tuple(params),
+        )
+        records: list[dict[str, str]] = []
+        groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+        known_person_names, known_person_accounts = self._known_person_counterparties(import_batch_id)
+        in_total = 0.0
+        out_total = 0.0
+        for row in rows:
+            record = {
+                "data_source": str(row[0] or ""),
+                "bank_type": str(row[1] or ""),
+                "person_name": UNKNOWN_PERSON_NAME if is_unknown else name,
+                "acct_no": str(row[2] or ""),
+                "txn_time": str(row[3] or ""),
+                "txn_direction": str(row[4] or ""),
+                "currency": str(row[5] or "CNY"),
+                "amount": str(row[6] or ""),
+                "balance": str(row[7] or ""),
+                "counterparty_name": str(row[8] or ""),
+                "counterparty_account": str(row[9] or ""),
+                "txn_desc": str(row[10] or ""),
+                "remark": str(row[11] or ""),
+            }
+            records.append(record)
+            amount = abs(self._safe_float(record["amount"]))
+            is_income = record["txn_direction"] == "收入"
+            is_expense = record["txn_direction"] == "支出"
+            if is_income:
+                in_total += amount
+            elif is_expense:
+                out_total += amount
+            raw_cp_name = record["counterparty_name"].strip()
+            cp_name = raw_cp_name or "未识别对手"
+            cp_acct = record["counterparty_account"].strip()
+            counterparty_category = self._counterparty_category(
+                raw_cp_name,
+                cp_acct,
+                known_person_names,
+                known_person_accounts,
+            )
+            key = (record["bank_type"], cp_name, cp_acct)
+            item = groups.setdefault(
+                key,
+                {
+                    "bank_type": record["bank_type"],
+                    "counterparty_name": cp_name,
+                    "counterparty_account": cp_acct,
+                    "counterparty_category": counterparty_category,
+                    "txn_count": 0,
+                    "income_count": 0,
+                    "expense_count": 0,
+                    "income_total": 0.0,
+                    "expense_total": 0.0,
+                    "net_amount": 0.0,
+                },
+            )
+            item["txn_count"] += 1
+            if is_income:
+                item["income_count"] += 1
+                item["income_total"] += amount
+            elif is_expense:
+                item["expense_count"] += 1
+                item["expense_total"] += amount
+            item["net_amount"] = item["income_total"] - item["expense_total"]
+
+        group_rows = sorted(
+            groups.values(),
+            key=lambda item: (-float(item["expense_total"]), -float(item["income_total"]), item["bank_type"]),
+        )
+        organization_rows = [
+            item for item in group_rows if item["counterparty_category"] == "company_platform"
+        ]
+        return {
+            "identity": {"person_name": UNKNOWN_PERSON_NAME if is_unknown else name, "id_no": identity},
+            "accounts": accounts,
+            "summary": {
+                "txn_count": len(records),
+                "in_total": in_total,
+                "out_total": out_total,
+                "net_amount": in_total - out_total,
+                "bank_count": len({item["bank_type"] for item in accounts}),
+                "account_count": len(accounts),
+                "counterparty_count": len(groups),
+                "organization_counterparty_count": len(
+                    {(item["counterparty_name"], item["counterparty_account"]) for item in organization_rows}
+                ),
+            },
+            "groups": group_rows,
+            "organization_groups": organization_rows,
+            "records": records,
+        }
 
     def summarize(self, records: list[dict[str, str]]) -> dict[str, Any]:
         count = len(records)
@@ -284,14 +547,53 @@ class BankQueryService:
             ]
         )
 
+
     def _append_filters(self, sql_parts: list[str], params: list[Any], filters: BankQueryFilters) -> None:
+        for token in self._quick_tokens(filters.quick_query):
+            bank_aliases = self._quick_bank_aliases(token)
+            if bank_aliases:
+                sql_parts.append(
+                    " AND (" + " OR ".join("COALESCE(t.bank_name, '') LIKE ?" for _ in bank_aliases) + ")"
+                )
+                params.extend(f"%{alias}%" for alias in bank_aliases)
+                continue
+            aliases = self._quick_aliases(token)
+            token_clause = " OR ".join(
+                [
+                    """
+                    COALESCE(t.bank_name, '') LIKE ?
+                    OR COALESCE(t.person_name, '') LIKE ?
+                    OR COALESCE(t.acct_no, '') LIKE ?
+                    OR COALESCE(t.counterparty_name, '') LIKE ?
+                    OR COALESCE(t.counterparty_account, '') LIKE ?
+                    OR COALESCE(t.txn_direction, '') LIKE ?
+                    OR COALESCE(t.summary, '') LIKE ?
+                    OR COALESCE(t.remark, '') LIKE ?
+                    OR EXISTS (
+                        SELECT 1 FROM std_bank_account a2
+                        WHERE a2.import_batch_id=t.import_batch_id
+                          AND a2.bank_name=t.bank_name
+                          AND a2.acct_no=t.acct_no
+                          AND COALESCE(a2.person_name,'') LIKE ?
+                    )
+                    """
+                    for _ in aliases
+                ]
+            )
+            sql_parts.append(
+                f" AND ({token_clause})"
+            )
+            for alias in aliases:
+                like = f"%{alias}%"
+                params.extend([like, like, like, like, like, like, like, like, like])
         if filters.bank_type:
             sql_parts.append(" AND COALESCE(t.bank_name, '') LIKE ?")
             params.append(f"%{filters.bank_type}%")
         if filters.person_name:
             sql_parts.append(
                 " AND (COALESCE(t.person_name, '') LIKE ? OR EXISTS (SELECT 1 FROM std_bank_account a2 "
-                "WHERE a2.acct_no=t.acct_no AND COALESCE(a2.person_name,'') LIKE ?))"
+                "WHERE a2.import_batch_id=t.import_batch_id AND a2.bank_name=t.bank_name "
+                "AND a2.acct_no=t.acct_no AND COALESCE(a2.person_name,'') LIKE ?))"
             )
             like = f"%{filters.person_name}%"
             params.extend([like, like])
@@ -326,6 +628,35 @@ class BankQueryService:
             return "by_amount_time"
         return "by_time_only"
 
+    def _quick_tokens(self, query: str) -> list[str]:
+        return [token for token in re.split(r"\s+", (query or "").strip()) if token]
+
+    def _quick_aliases(self, token: str) -> list[str]:
+        aliases = {token}
+        if token in {"收入", "转入", "收款", "入账", "进账"}:
+            aliases.update({"收入", "入", "转入", "收款", "贷", "贷方"})
+        if token in {"支出", "转出", "付款", "出账", "支付"}:
+            aliases.update({"支出", "出", "转出", "付款", "借", "借方"})
+        return [item for item in aliases if item]
+
+    @staticmethod
+    def _quick_bank_aliases(token: str) -> tuple[str, ...]:
+        """Treat an entered bank name as the owner's bank, never counterparty text."""
+        text = (token or "").strip().lower()
+        if len(text) < 2:
+            return ()
+        banks = (
+            ("工商银行", ("工商银行", "工行", "icbc", "工商")),
+            ("农业银行", ("农业银行", "农行", "abc", "农业")),
+            ("建设银行", ("建设银行", "建行", "ccb", "建设")),
+            ("广发银行", ("广发银行", "广发行", "广发", "cgb")),
+            ("光大银行", ("光大银行", "光大", "ceb")),
+        )
+        for canonical, aliases in banks:
+            if any(text == alias.lower() or text in alias.lower() for alias in aliases):
+                return (canonical,)
+        return ()
+
     def _ensure_desc_templates(self) -> None:
         defaults = {
             "by_time_only": "在{start_time}到{end_time}期间，共发生{txn_count}笔交易，总金额{total_amount}，分币种：{currency_breakdown}。",
@@ -351,6 +682,43 @@ class BankQueryService:
             return float(text)
         except ValueError:
             return 0.0
+
+    def _known_person_counterparties(self, import_batch_id: str) -> tuple[set[str], set[str]]:
+        """Return known names and ID-backed account numbers from account profiles."""
+        rows = self._client.query_all(
+            """
+            SELECT DISTINCT
+                   TRIM(COALESCE(person_name, '')) AS person_name,
+                   CASE
+                       WHEN id_no IS NOT NULL AND TRIM(id_no)<>'' THEN TRIM(acct_no)
+                       ELSE ''
+                   END AS id_backed_acct_no
+            FROM std_bank_account
+            WHERE import_batch_id=?;
+            """,
+            (import_batch_id,),
+        )
+        return (
+            {str(row[0]).strip() for row in rows if str(row[0] or "").strip()},
+            {str(row[1]).strip() for row in rows if str(row[1] or "").strip()},
+        )
+
+    @staticmethod
+    def _counterparty_category(
+        name: str,
+        account: str,
+        known_person_names: set[str],
+        known_person_accounts: set[str],
+    ) -> str:
+        """Classify from the account-profile identity relation, not name keywords."""
+        normalized_name = (name or "").strip()
+        if normalized_name in {"", "-", "未知", "未知对手"}:
+            return "individual_or_unknown"
+        if normalized_name in known_person_names or (account or "").strip() in known_person_accounts:
+            return "individual_or_unknown"
+        if len("".join(normalized_name.split())) in {2, 3}:
+            return "individual_or_unknown"
+        return "company_platform"
 
     def _format_currency_breakdown(self, mapping: dict[str, float]) -> str:
         if not mapping:
@@ -379,6 +747,8 @@ class BankQueryService:
         parts: list[str] = []
         if filters.bank_type:
             parts.append(f"银行类型={filters.bank_type}")
+        if filters.quick_query:
+            parts.append(f"模糊关键词={filters.quick_query}")
         if filters.person_name:
             parts.append(f"姓名={filters.person_name}")
         if filters.acct_no:

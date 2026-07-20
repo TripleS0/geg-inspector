@@ -29,6 +29,7 @@ class TelecomIngestService(BankIngestService):
         carrier_template_id: str = "",
     ) -> IngestResult:
         """Ingest telecom CDR files into normalized raw rows."""
+        self._ensure_meta_columns()
         import_batch_id = str(uuid4())
         sheets_total = 0
         rows_total = 0
@@ -60,7 +61,7 @@ class TelecomIngestService(BankIngestService):
                 continue
 
             file_hash = self._hash_file(path)
-            file_id = self._insert_file_record(import_batch_id, path, file_hash, bank_name, source_type)
+            file_id = self._insert_file_record(import_batch_id, path, file_hash, bank_name, "", source_type)
             sheet_name = "运营商话单信息"
             raw_columns = [str(col).strip() for col in parsed.columns]
             fingerprint = self._build_fingerprint(bank_name, source_type, sheet_name, raw_columns)

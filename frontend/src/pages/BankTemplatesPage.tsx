@@ -4,11 +4,13 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Descriptions,
   Drawer,
   Form,
   Input,
   InputNumber,
+  Modal,
   Radio,
   Row,
   Select,
@@ -16,11 +18,12 @@ import {
   Steps,
   Table,
   Tag,
+  Tabs,
   Typography,
   Upload,
   message,
 } from "antd";
-import { DeleteOutlined, ReloadOutlined, SaveOutlined, SettingOutlined } from "@ant-design/icons";
+import { CopyOutlined, DeleteOutlined, EditOutlined, ReloadOutlined, SaveOutlined, SettingOutlined, StopOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import {
@@ -28,6 +31,7 @@ import {
   analyzeBankTemplateSample,
   api,
   BankTemplateAnalyzeResult,
+  BankCatalogItem,
   BankTemplateType,
   listBankTemplateSampleSheets,
   UserBankTemplate,
@@ -99,6 +103,7 @@ function BankTemplatesPage() {
   const [form] = Form.useForm<{
     template_type: BankTemplateType;
     bank_display_name: string;
+    bank_id: string;
     display_name: string;
     sheet_name?: string;
     bank_keywords: string;
@@ -110,21 +115,48 @@ function BankTemplatesPage() {
   const [sampleKind, setSampleKind] = useState<"excel" | "ocr">("excel");
   const [sheetOptions, setSheetOptions] = useState<string[]>([]);
   const [templates, setTemplates] = useState<UserBankTemplate[]>([]);
+  const [banks, setBanks] = useState<BankCatalogItem[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [analyzeResult, setAnalyzeResult] = useState<BankTemplateAnalyzeResult | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [directionRules, setDirectionRules] = useState<Record<string, string>>({});
   const [ruleField, setRuleField] = useState<string | null>(null);
+  const [templateView, setTemplateView] = useState<"preview" | "entry">("preview");
+  const [newBankOpen, setNewBankOpen] = useState(false);
+  const [newBankName, setNewBankName] = useState("");
+  const [editingTemplateId, setEditingTemplateId] = useState("");
+  const [editingBank, setEditingBank] = useState<BankCatalogItem | null>(null);
+  const [editingBankName, setEditingBankName] = useState("");
 
   const templateType = Form.useWatch("template_type", form) || "txn_detail";
   const stdFields = STD_FIELDS[templateType];
   const mappedSources = useMemo(() => new Set(Object.values(mapping).filter(Boolean)), [mapping]);
-  const sourceHeaders = analyzeResult?.source_headers || [];
+  const sourceHeaders = analyzeResult?.source_headers || [...new Set(Object.values(mapping).filter(Boolean))];
+  const bankOptions = useMemo(
+    () => banks.filter((item) => item.is_active).map((item) => ({ label: item.display_name, value: item.bank_id })),
+    [banks]
+  );
+
+  const confirmNewBank = async () => {
+    const value = newBankName.trim();
+    if (!value) return;
+    try {
+      const bank = await api.createBank({ display_name: value, aliases: [value] });
+      setBanks((prev) => [...prev, bank]);
+      form.setFieldsValue({ bank_id: bank.bank_id, bank_display_name: bank.display_name, bank_keywords: bank.display_name });
+      setNewBankName("");
+      setNewBankOpen(false);
+      message.success("银行分类已创建");
+    } catch (err) {
+      message.error((err as Error).message);
+    }
+  };
 
   const refreshTemplates = async () => {
-    const data = await api.listBankTemplates();
-    setTemplates(data.items || []);
+    const [templateData, bankData] = await Promise.all([api.listBankTemplates(), api.listBanks()]);
+    setTemplates(templateData.items || []);
+    setBanks(bankData.items || []);
   };
 
   useEffect(() => {
@@ -138,7 +170,7 @@ function BankTemplatesPage() {
       message.warning(sampleKind === "ocr" ? "请先选择图片或 PDF 样本" : "请先选择 Excel 文件");
       return;
     }
-    const values = await form.validateFields(["template_type", "bank_display_name"]);
+    const values = await form.validateFields(["template_type", "bank_id", "bank_display_name"]);
     const selectedSheetName = form.getFieldValue("sheet_name") || "";
     setAnalyzing(true);
     try {
@@ -223,10 +255,11 @@ function BankTemplatesPage() {
     }
     setSaving(true);
     try {
-      await api.createBankTemplate({
+      const payload: UserBankTemplate = {
         display_name: values.display_name || `${values.bank_display_name}-${analyzeResult?.sheet_name || values.sheet_name || "第一个Sheet"}`,
         template_type: values.template_type,
         bank_display_name: values.bank_display_name,
+        bank_id: values.bank_id,
         bank_keywords: splitKeywords(values.bank_keywords || values.bank_display_name),
         sheet_keywords: splitKeywords(values.sheet_keywords || analyzeResult?.sheet_name || values.sheet_name || ""),
         field_map: fieldMap,
@@ -244,8 +277,11 @@ function BankTemplatesPage() {
             "%Y%m%d",
           ],
         },
-      });
-      message.success("模板已保存");
+      };
+      if (editingTemplateId) await api.updateBankTemplate(editingTemplateId, payload);
+      else await api.createBankTemplate(payload);
+      message.success(editingTemplateId ? "模板已更新" : "模板已保存");
+      setEditingTemplateId("");
       await refreshTemplates();
     } catch (err) {
       message.error((err as Error).message);
@@ -315,18 +351,21 @@ function BankTemplatesPage() {
   ];
 
   return (
-    <div className="page-stack">
+    <div className="page-stack" style={{ minWidth: 760 }}>
       <Card className="app-card">
-        <Title level={3}>银行模板录入</Title>
+        <Title level={3}>银行模板管理</Title>
         <Paragraph type="secondary">
-          通过 Excel 或 OCR 样本识别表头，拖拽源字段到标准字段，并配置借贷标志、日期时间等规则。
+          在预览中查看已有模板；需要新格式时，再录入样本并配置字段。
         </Paragraph>
-        <Steps
+        {templateView === "entry" ? <Steps
           current={analyzeResult ? 1 : 0}
           items={[{ title: "上传/选源" }, { title: "拖拽映射" }, { title: "配置规则" }, { title: "预览保存" }]}
-        />
+        /> : null}
+        <Tabs activeKey={templateView} onChange={(key) => setTemplateView(key as "preview" | "entry")}
+          items={[{ key: "preview", label: "银行模板预览" }, { key: "entry", label: "银行模板录入" }]} />
       </Card>
 
+      {templateView === "entry" ? <>
       <Row gutter={[16, 16]}>
         <Col span={8}>
           <Card title="1. 上传与识别" className="app-card">
@@ -366,9 +405,18 @@ function BankTemplatesPage() {
                   <Radio.Button value="account_profile">开户信息</Radio.Button>
                 </Radio.Group>
               </Form.Item>
-              <Form.Item name="bank_display_name" label="银行名称" rules={[{ required: true }]}>
-                <Input placeholder="如：工商银行" />
+              <Form.Item label="归属银行" required>
+                <Space.Compact style={{ width: "100%" }}>
+                  <Form.Item name="bank_id" rules={[{ required: true, message: "请输入归属银行" }]} noStyle>
+                    <Select showSearch allowClear placeholder="选择已有银行" options={bankOptions} style={{ width: "100%" }} onChange={(bankId) => {
+                      const bank = banks.find((item) => item.bank_id === bankId);
+                      form.setFieldsValue({ bank_display_name: bank?.display_name || "", bank_keywords: bank?.aliases.join(" ") || "" });
+                    }} />
+                  </Form.Item>
+                  <Button onClick={() => setNewBankOpen(true)}>新增银行</Button>
+                </Space.Compact>
               </Form.Item>
+              <Form.Item name="bank_display_name" hidden><Input /></Form.Item>
               <Form.Item name="sheet_name" label="Sheet 名称" hidden={sampleKind === "ocr"}>
                 <Select
                   allowClear
@@ -497,43 +545,79 @@ function BankTemplatesPage() {
           />
         ) : null}
         <Space style={{ marginTop: 16 }}>
-          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!analyzeResult} onClick={saveTemplate}>
-            保存模板
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} disabled={!analyzeResult && !editingTemplateId} onClick={saveTemplate}>
+            {editingTemplateId ? "更新模板" : "保存模板"}
           </Button>
           <Button onClick={refreshTemplates}>刷新模板列表</Button>
         </Space>
       </Card>
+      </> : null}
 
-      <Card title="已保存模板" className="app-card">
-        <Table
-          rowKey={(row) => row.template_id || row.display_name}
-          size="small"
-          columns={[
-            { title: "模板名", dataIndex: "display_name" },
-            { title: "类型", dataIndex: "template_type" },
-            { title: "银行", dataIndex: "bank_display_name" },
-            { title: "Sheet 关键词", render: (_, row) => row.sheet_keywords?.join("、") },
-            {
-              title: "操作",
-              render: (_, row) => (
-                <Button
-                  danger
-                  size="small"
-                  icon={<DeleteOutlined />}
-                  onClick={async () => {
-                    if (!row.template_id) return;
-                    await api.deleteBankTemplate(row.template_id);
-                    await refreshTemplates();
-                  }}
-                >
-                  删除
-                </Button>
-              ),
-            },
-          ]}
-          dataSource={templates}
+      {templateView === "preview" ? <Card title="已有银行模板" className="app-card">
+        <Collapse
+          defaultActiveKey={banks.filter((bank) => bank.is_active).map((bank) => bank.bank_id)}
+          items={banks.map((bank) => ({
+            key: bank.bank_id,
+            label: <Space><Text strong>{bank.display_name}</Text><Tag>{bank.is_builtin ? "内置银行" : "自定义银行"}</Tag><Tag color={bank.is_active ? "success" : "default"}>{bank.is_active ? "启用" : "停用"}</Tag></Space>,
+            extra: <Space onClick={(event) => event.stopPropagation()}>
+              <Button size="small" disabled={bank.is_builtin} icon={<EditOutlined />} onClick={() => { setEditingBank(bank); setEditingBankName(bank.display_name); }}>改名</Button>
+              <Button size="small" icon={<StopOutlined />} onClick={async () => { await api.updateBank(bank.bank_id, { is_active: bank.is_active ? 0 : 1 }); await refreshTemplates(); }}>{bank.is_active ? "停用" : "启用"}</Button>
+            </Space>,
+            children: <Table
+              rowKey={(row) => row.template_id || row.display_name}
+              size="small"
+              pagination={false}
+              columns={[
+                { title: "模板名", dataIndex: "display_name" },
+                { title: "类型", render: (_, row) => row.template_type === "account_profile" ? "开户信息" : "交易流水" },
+                { title: "来源", render: (_, row) => <Tag>{row.is_builtin ? "内置" : "自定义"}</Tag> },
+                { title: "状态", render: (_, row) => <Tag color={row.is_active !== 0 ? "success" : "default"}>{row.is_active !== 0 ? "启用" : "停用"}</Tag> },
+                { title: "Sheet 关键词", render: (_, row) => row.sheet_keywords?.join("、") || "-" },
+                { title: "字段映射", ellipsis: true, render: (_, row) => Object.entries(row.field_map || {}).map(([target, source]) => `${target} ← ${source.join("/")}`).join("；") || "-" },
+                {
+                  title: "操作",
+                  width: 250,
+                  render: (_, row) => row.is_builtin ? <Text type="secondary">内置模板只读</Text> : <Space>
+                    <Button size="small" icon={<EditOutlined />} onClick={() => {
+                      setEditingTemplateId(row.template_id || "");
+                      setTemplateView("entry");
+                      setAnalyzeResult(null);
+                      setMapping(Object.fromEntries(Object.entries(row.field_map || {}).map(([key, values]) => [key, values[0] || ""])));
+                      setDirectionRules(row.direction_rules || {});
+                      form.setFieldsValue({
+                        template_type: row.template_type,
+                        bank_id: row.bank_id || bank.bank_id,
+                        bank_display_name: bank.display_name,
+                        display_name: row.display_name,
+                        bank_keywords: row.bank_keywords.join(" "),
+                        sheet_keywords: row.sheet_keywords.join(" "),
+                        match_priority: row.match_priority,
+                        header_row_0based: row.header_row_0based,
+                      });
+                    }}>编辑</Button>
+                    <Button size="small" icon={<CopyOutlined />} onClick={async () => { await api.createBankTemplate({ ...row, template_id: undefined, display_name: `${row.display_name} 副本` }); await refreshTemplates(); }}>复制</Button>
+                    <Button size="small" icon={<StopOutlined />} onClick={async () => { if (row.template_id) await api.updateBankTemplate(row.template_id, { is_active: row.is_active === 0 ? 1 : 0 }); await refreshTemplates(); }}>{row.is_active === 0 ? "启用" : "停用"}</Button>
+                    <Button danger size="small" icon={<DeleteOutlined />} onClick={async () => { if (row.template_id) await api.deleteBankTemplate(row.template_id); await refreshTemplates(); }}>删除</Button>
+                  </Space>,
+                },
+              ]}
+              dataSource={templates.filter((template) => template.bank_id === bank.bank_id)}
+            />,
+          }))}
         />
       </Card>
+      : null}
+      <Modal title="新增银行" open={newBankOpen} onOk={confirmNewBank} onCancel={() => setNewBankOpen(false)} okText="确认">
+        <Input autoFocus value={newBankName} onChange={(event) => setNewBankName(event.target.value)} placeholder="如：长沙银行" />
+      </Modal>
+      <Modal title="修改银行名称" open={!!editingBank} onOk={async () => {
+        if (!editingBank || !editingBankName.trim()) return;
+        await api.updateBank(editingBank.bank_id, { display_name: editingBankName.trim() });
+        setEditingBank(null);
+        await refreshTemplates();
+      }} onCancel={() => setEditingBank(null)} okText="保存">
+        <Input value={editingBankName} onChange={(event) => setEditingBankName(event.target.value)} />
+      </Modal>
 
       <Drawer title="字段规则配置" open={!!ruleField} onClose={() => setRuleField(null)} width={420}>
         {ruleField === "txn_direction" ? (

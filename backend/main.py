@@ -1,6 +1,7 @@
 """FastAPI backend for the offline desktop Web system."""
 
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -50,6 +52,7 @@ from app.services.integration.commercial.co_bid_analysis_service import CoBidAna
 from app.services.integration.telecom.analysis_service import TelecomAnalysisFilters
 from app.services.integration.wechat.analysis_service import WechatAnalysisFilters
 from app.services.integration.bank.user_bank_template_repository import UserBankTemplateRepository
+from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 from app.services.desensitizer_service import collect_supported_files, process_single_file
 from app.services.integration.qichacha_client import (
@@ -122,6 +125,7 @@ class BankOcrHeaderPayload(BaseModel):
 class BankFilterRequest(BaseModel):
     """Bank filter payload."""
 
+    quick_query: str = ""
     bank_type: str = ""
     person_name: str = ""
     acct_no: str = ""
@@ -142,9 +146,21 @@ class BankFilterRequest(BaseModel):
         return BankQueryFilters(**data)
 
 
+class BankRecordsExportRequest(BankFilterRequest):
+    """Export current bank filtered records."""
+
+    file_name: str = ""
+
+
+class BankPersonFundsRequest(BaseModel):
+    person_name: str
+    id_no: str
+
+
 class CommercialAnalysisFilterRequest(BaseModel):
     """Commercial bid analysis filter payload."""
 
+    quick_query: str = ""
     company_name: str = ""
     purchaser: str = ""
     inquiry_no: str = ""
@@ -183,6 +199,7 @@ class CommercialCoBidAnalysisRequest(BaseModel):
 class WechatAnalysisFilterRequest(BaseModel):
     """WeChat transfer analysis filter payload."""
 
+    quick_query: str = ""
     user_name: str = ""
     debit_credit_type: str = ""
     counterparty_name: str = ""
@@ -204,6 +221,7 @@ class WechatAnalysisFilterRequest(BaseModel):
         else:  # pragma: no cover - pydantic v1 fallback
             data = self.dict()
         return WechatAnalysisFilters(
+            quick_query=data.get("quick_query", ""),
             user_name=data.get("user_name", ""),
             debit_credit_type=data.get("debit_credit_type", ""),
             counterparty_name=data.get("counterparty_name", ""),
@@ -256,6 +274,7 @@ class GraphSelectionDetailPayload(BaseModel):
 class TelecomAnalysisFilterRequest(BaseModel):
     """Telecom CDR analysis filter payload."""
 
+    quick_query: str = ""
     local_phone: str = ""
     peer_phone: str = ""
     call_type: str = ""
@@ -278,6 +297,7 @@ class TelecomAnalysisFilterRequest(BaseModel):
         else:  # pragma: no cover - pydantic v1 fallback
             data = self.dict()
         return TelecomAnalysisFilters(
+            quick_query=data.get("quick_query", ""),
             local_phone=data.get("local_phone", ""),
             peer_phone=data.get("peer_phone", ""),
             call_type=data.get("call_type", ""),
@@ -387,6 +407,31 @@ class QichachaExportRowsBody(BaseModel):
     run_id: Optional[str] = None
 
 
+class ExportRowsColumn(BaseModel):
+    """Column definition for generic table export."""
+
+    key: str
+    title: str
+
+
+class ExportRowsSheet(BaseModel):
+    """One worksheet for a generic Excel export."""
+
+    sheet_name: str = "明细"
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[ExportRowsColumn] = Field(default_factory=list)
+
+
+class ExportRowsPayload(BaseModel):
+    """Generic rows-to-Excel export payload."""
+
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: List[ExportRowsColumn] = Field(default_factory=list)
+    file_name: str = "records"
+    sheet_name: str = "明细"
+    sheets: List[ExportRowsSheet] = Field(default_factory=list)
+
+
 class QichachaIngestProfileBody(BaseModel):
     """企查查预览行写入工商主体库。"""
 
@@ -408,6 +453,7 @@ class UserBankTemplatePayload(BaseModel):
     display_name: str = Field(..., min_length=1)
     template_type: str = Field(..., description="account_profile 或 txn_detail")
     bank_display_name: str = Field(..., min_length=1)
+    bank_id: Optional[str] = None
     bank_keywords: List[str] = Field(default_factory=list)
     sheet_keywords: List[str] = Field(default_factory=list)
     field_map: Dict[str, List[str]] = Field(default_factory=dict)
@@ -426,6 +472,7 @@ class UserBankTemplatePatchBody(BaseModel):
     display_name: Optional[str] = None
     template_type: Optional[str] = None
     bank_display_name: Optional[str] = None
+    bank_id: Optional[str] = None
     bank_keywords: Optional[List[str]] = None
     sheet_keywords: Optional[List[str]] = None
     field_map: Optional[Dict[str, List[str]]] = None
@@ -435,6 +482,17 @@ class UserBankTemplatePatchBody(BaseModel):
     template_group_id: Optional[str] = None
     direction_rules: Optional[Dict[str, str]] = None
     datetime_patterns: Optional[Dict[str, Any]] = None
+    is_active: Optional[int] = None
+
+
+class BankCatalogCreateBody(BaseModel):
+    display_name: str = Field(..., min_length=1)
+    aliases: List[str] = Field(default_factory=list)
+
+
+class BankCatalogPatchBody(BaseModel):
+    display_name: Optional[str] = None
+    aliases: Optional[List[str]] = None
     is_active: Optional[int] = None
 
 
@@ -622,6 +680,100 @@ def persist_qichacha_query_logs(log_rows: List[Tuple[Any, ...]]) -> None:
     )
 
 
+def bank_records_to_excel_bytes(rows: List[Dict[str, Any]]) -> bytes:
+    """Build an Excel workbook for filtered bank records."""
+
+    try:
+        import pandas as pd
+    except ImportError as err:  # pragma: no cover - deployment dependency guard
+        raise HTTPException(status_code=500, detail="缺少 pandas/openpyxl，无法导出 Excel") from err
+
+    from io import BytesIO
+
+    headers = [
+        ("txn_time", "时间"),
+        ("bank_type", "银行"),
+        ("person_name", "姓名"),
+        ("acct_no", "账号/卡号"),
+        ("txn_direction", "方向"),
+        ("amount", "金额"),
+        ("balance", "余额"),
+        ("counterparty_name", "对手"),
+        ("counterparty_account", "对手账号"),
+        ("txn_desc", "摘要"),
+        ("remark", "备注"),
+        ("data_source", "数据来源"),
+    ]
+    data = [{label: row.get(key, "") for key, label in headers} for row in rows]
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(data).to_excel(writer, index=False, sheet_name="命中记录")
+        ws = writer.sheets.get("命中记录")
+        if ws is not None:
+            ws.freeze_panes = "A2"
+            for col in ws.columns:
+                letter = col[0].column_letter
+                max_len = max(len(str(cell.value or "")) for cell in col[:80])
+                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 32)
+    return buffer.getvalue()
+
+
+def rows_to_excel_bytes(rows: List[Dict[str, Any]], columns: List[ExportRowsColumn], sheet_name: str = "明细") -> bytes:
+    """Build an Excel workbook from UI table rows."""
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="没有可导出的数据")
+    return sheets_to_excel_bytes([
+        ExportRowsSheet(sheet_name=sheet_name, rows=rows, columns=columns),
+    ])
+
+
+def sheets_to_excel_bytes(sheets: List[ExportRowsSheet]) -> bytes:
+    """Build a multi-sheet Excel workbook from UI table rows."""
+
+    if not sheets or not any(sheet.rows for sheet in sheets):
+        raise HTTPException(status_code=400, detail="没有可导出的数据")
+    try:
+        import pandas as pd
+    except ImportError as err:  # pragma: no cover
+        raise HTTPException(status_code=500, detail="缺少 pandas/openpyxl，无法导出 Excel") from err
+
+    from io import BytesIO
+
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        used_names: set[str] = set()
+        for index, sheet in enumerate(sheets, start=1):
+            active_columns = sheet.columns or [
+                ExportRowsColumn(key=key, title=key)
+                for key in (sheet.rows[0].keys() if sheet.rows else [])
+            ]
+            data = [
+                {col.title: row.get(col.key, "") for col in active_columns}
+                for row in sheet.rows
+            ]
+            base_name = (sheet.sheet_name or f"明细{index}").strip()[:31] or f"明细{index}"
+            safe_sheet = base_name
+            suffix = 2
+            while safe_sheet in used_names:
+                safe_sheet = f"{base_name[:28]}_{suffix}"
+                suffix += 1
+            used_names.add(safe_sheet)
+            pd.DataFrame(data, columns=[col.title for col in active_columns]).to_excel(
+                writer,
+                index=False,
+                sheet_name=safe_sheet,
+            )
+            ws = writer.sheets.get(safe_sheet)
+            if ws is not None:
+                ws.freeze_panes = "A2"
+                for col in ws.columns:
+                    letter = col[0].column_letter
+                    max_len = max(len(str(cell.value or "")) for cell in col[:80])
+                    ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 36)
+    return buffer.getvalue()
+
+
 def create_app() -> FastAPI:
     """Create the local FastAPI app."""
     bootstrap_database()
@@ -756,11 +908,17 @@ def create_app() -> FastAPI:
         bank_name: str = "默认来源",
         batch_name: Optional[str] = Form(default=None),
         target_batch_id: Optional[str] = Form(default=None),
+        sheet_assignments_json: Optional[str] = Form(default=None),
     ) -> Dict[str, str]:
         if source_type not in {"bank", "commercial", "enterprise", "wechat", "telecom"}:
             raise HTTPException(status_code=400, detail="source_type 仅支持 bank、commercial、enterprise、wechat 或 telecom")
         task_upload_dir = uploads_dir() / source_type
         saved: List[str] = []
+        saved_assignments: Dict[str, Dict[str, Dict[str, str]]] = {}
+        try:
+            requested_assignments = json.loads(sheet_assignments_json) if sheet_assignments_json else {}
+        except json.JSONDecodeError as err:
+            raise HTTPException(status_code=400, detail="模板选择数据格式错误") from err
         task_upload_dir.mkdir(parents=True, exist_ok=True)
         for item in files:
             original = Path(item.filename or "upload.xlsx").name
@@ -768,6 +926,10 @@ def create_app() -> FastAPI:
             with target.open("wb") as fp:
                 shutil.copyfileobj(item.file, fp)
             saved.append(str(target))
+            if source_type == "bank" and isinstance(requested_assignments, dict):
+                config = requested_assignments.get(original)
+                if isinstance(config, dict):
+                    saved_assignments[str(target)] = config
         if source_type == "enterprise":
             return enqueue(
                 background_tasks,
@@ -786,6 +948,7 @@ def create_app() -> FastAPI:
                 source_type=source_type,
                 batch_name=batch_name,
                 import_batch_id=target_batch_id,
+                sheet_assignments=saved_assignments if source_type == "bank" else None,
             ).to_dict(),
         )
 
@@ -1367,6 +1530,31 @@ def create_app() -> FastAPI:
     def bank_records(batch_id: str, payload: BankFilterRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().query_records(batch_id, payload.to_filters()).to_dict()
 
+    @app.get("/api/bank/{batch_id}/person-identities")
+    def bank_person_identities(batch_id: str) -> Dict[str, Any]:
+        return {"items": BankAnalysisUseCase().person_identities(batch_id)}
+
+    @app.post("/api/bank/{batch_id}/person-funds")
+    def bank_person_funds(batch_id: str, payload: BankPersonFundsRequest) -> Dict[str, Any]:
+        try:
+            return BankAnalysisUseCase().person_fund_summary(batch_id, payload.person_name, payload.id_no)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.post("/api/bank/{batch_id}/records/export")
+    def export_bank_records(batch_id: str, payload: BankRecordsExportRequest) -> Response:
+        result = BankAnalysisUseCase().query_records(batch_id, payload.to_filters())
+        if not result.records:
+            raise HTTPException(status_code=400, detail="当前筛选没有可导出的记录")
+        blob = bank_records_to_excel_bytes(result.records)
+        safe_name = re.sub(r'[\\/:*?"<>|\s]+', "_", (payload.file_name or "").strip())[:80]
+        fname = f"{safe_name or 'bank_records'}_{batch_id[:8]}.xlsx"
+        return Response(
+            content=blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
     @app.post("/api/bank/{batch_id}/modules/{module_id}")
     def bank_module(batch_id: str, module_id: str, payload: ModuleRequest) -> Dict[str, Any]:
         return BankAnalysisUseCase().run_module(batch_id, module_id, payload.to_params())
@@ -1506,6 +1694,27 @@ def create_app() -> FastAPI:
             lambda: ExportUseCase().export_commercial_analysis_report(batch_id, payload.output_path).to_dict(),
         )
 
+    @app.post("/api/export/rows")
+    def export_rows(payload: ExportRowsPayload) -> Response:
+        blob = (
+            sheets_to_excel_bytes(payload.sheets)
+            if payload.sheets
+            else rows_to_excel_bytes(payload.rows, payload.columns, payload.sheet_name)
+        )
+        safe_name = re.sub(r'[\\/:*?"<>|\s]+', "_", (payload.file_name or "records").strip())[:80] or "records"
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_name).strip("._") or "records"
+        encoded_name = quote(f"{safe_name}.xlsx", safe="")
+        return Response(
+            content=blob,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}.xlsx"; '
+                    f"filename*=UTF-8''{encoded_name}"
+                )
+            },
+        )
+
     @app.post("/api/qichacha/basic-details/query")
     async def qichacha_basic_query(
         keywords: Optional[str] = Form(None),
@@ -1591,6 +1800,7 @@ def create_app() -> FastAPI:
             "display_name": rec.display_name,
             "template_type": rec.template_type,
             "bank_display_name": rec.bank_display_name,
+            "bank_id": rec.bank_id,
             "bank_keywords": rec.bank_keywords,
             "sheet_keywords": rec.sheet_keywords,
             "field_map": rec.field_map,
@@ -1601,6 +1811,18 @@ def create_app() -> FastAPI:
             "direction_rules": rec.direction_rules,
             "datetime_patterns": rec.datetime_patterns,
             "is_active": rec.is_active,
+            "created_at": rec.created_at,
+            "updated_at": rec.updated_at,
+            "is_builtin": False,
+        }
+
+    def _bank_dict(rec: Any) -> Dict[str, Any]:
+        return {
+            "bank_id": rec.bank_id,
+            "display_name": rec.display_name,
+            "aliases": rec.aliases,
+            "is_builtin": bool(rec.is_builtin),
+            "is_active": int(rec.is_active),
             "created_at": rec.created_at,
             "updated_at": rec.updated_at,
         }
@@ -1623,7 +1845,51 @@ def create_app() -> FastAPI:
         if group_id and str(group_id).strip():
             gid = str(group_id).strip()
             rows = [r for r in rows if (r.template_group_id or "") == gid]
-        return {"items": [_user_tpl_dict(r) for r in rows]}
+        from app.services.integration.bank.template_library import BUILTIN_TEMPLATES
+
+        catalog = BankCatalogRepository()
+        builtins = [
+            {
+                "template_id": item.template_id,
+                "display_name": f"{item.bank_display_name}-{('开户信息' if item.template_type == 'account_profile' else '交易明细')}",
+                "template_type": item.template_type,
+                "bank_display_name": item.bank_display_name,
+                "bank_id": (catalog.get_by_name(item.bank_display_name).bank_id if catalog.get_by_name(item.bank_display_name) else ""),
+                "bank_keywords": list(item.bank_keywords),
+                "sheet_keywords": list(item.sheet_keywords),
+                "field_map": {key: list(value) for key, value in item.field_map.items()},
+                "signature_columns": list(item.signature_columns),
+                "header_row_0based": item.header_row_hint,
+                "match_priority": -1,
+                "is_active": 1,
+                "is_builtin": True,
+            }
+            for item in BUILTIN_TEMPLATES
+        ]
+        return {"items": [*builtins, *[_user_tpl_dict(r) for r in rows]]}
+
+    @app.get("/api/banks")
+    def list_banks(active_only: bool = Query(default=False)) -> Dict[str, Any]:
+        return {"items": [_bank_dict(item) for item in BankCatalogRepository().list_all(active_only=active_only)]}
+
+    @app.post("/api/banks")
+    def create_bank(payload: BankCatalogCreateBody) -> Dict[str, Any]:
+        try:
+            return _bank_dict(BankCatalogRepository().create(payload.display_name, payload.aliases))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+
+    @app.patch("/api/banks/{bank_id}")
+    def patch_bank(bank_id: str, payload: BankCatalogPatchBody) -> Dict[str, Any]:
+        try:
+            return _bank_dict(BankCatalogRepository().update(
+                bank_id,
+                display_name=payload.display_name,
+                aliases=payload.aliases,
+                is_active=payload.is_active,
+            ))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
 
     @app.post("/api/bank-templates/analyze-sample")
     async def analyze_bank_template_sample(
@@ -1714,8 +1980,8 @@ def create_app() -> FastAPI:
                 tmp.write(body)
                 tmp_path = Path(tmp.name)
             wiz = BankTemplateWizardService()
-            names = wiz.list_sheet_names(tmp_path)
-            return {"sheets": names}
+            preview = wiz.preview_import(tmp_path)
+            return {"sheets": [item["sheet_name"] for item in preview["sheets"]], "preview": preview}
         finally:
             if tmp_path is not None and tmp_path.is_file():
                 try:
@@ -1763,6 +2029,7 @@ def create_app() -> FastAPI:
             display_name=payload.display_name.strip(),
             template_type=payload.template_type,
             bank_display_name=payload.bank_display_name.strip(),
+            bank_id=(payload.bank_id or "").strip() or None,
             bank_keywords=[str(x).strip() for x in payload.bank_keywords if str(x).strip()],
             sheet_keywords=[str(x).strip() for x in payload.sheet_keywords if str(x).strip()],
             field_map={k: [str(x) for x in v] for k, v in payload.field_map.items()},
@@ -1798,6 +2065,7 @@ def create_app() -> FastAPI:
             display_name=payload.display_name,
             template_type=payload.template_type,
             bank_display_name=payload.bank_display_name,
+            bank_id=payload.bank_id,
             bank_keywords=payload.bank_keywords,
             sheet_keywords=payload.sheet_keywords,
             field_map=payload.field_map,

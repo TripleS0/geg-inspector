@@ -14,9 +14,10 @@ import {
   Typography,
   message,
 } from "antd";
+import { DownloadOutlined, DownOutlined, SearchOutlined, UpOutlined } from "@ant-design/icons";
 import ReactECharts from "echarts-for-react";
 import { useSearchParams } from "react-router-dom";
-import { api, BatchInfo, batchLabel, TelecomAnalysisFilter, TelecomAnalysisResponse } from "../api";
+import { api, BatchInfo, batchLabel, TelecomAnalysisFilter, TelecomAnalysisRecord, TelecomAnalysisResponse, TelecomPeerRanking } from "../api";
 import { chartPair, chartPalette } from "../theme";
 import { AnalysisDateTimeFilterFields, AnalysisDateTimeFormFields, serializeAnalysisDateTimeFilters } from "../components/AnalysisDateTimeFilters";
 
@@ -31,26 +32,51 @@ const DIRECTION_LABELS: Record<string, string> = {
   unknown: "其他",
 };
 
-function renderDescription(text: string) {
-  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return <Paragraph className="analysis-empty">暂无描述</Paragraph>;
-  return (
-    <div className="analysis-description">
-      {lines.map((line, index) => (
-        <Paragraph key={`${index}-${line}`} className="analysis-description-line">
-          {line}
-        </Paragraph>
-      ))}
-    </div>
-  );
-}
-
 function formatDuration(seconds: number) {
   const sec = Number(seconds || 0);
   if (sec < 60) return `${sec} 秒`;
   const min = Math.floor(sec / 60);
   const rest = sec % 60;
   return rest ? `${min} 分 ${rest} 秒` : `${min} 分`;
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function keywordTokens(keyword: string) {
+  return keyword.trim().split(/\s+/).filter(Boolean);
+}
+
+function peerMatchesKeyword(row: TelecomPeerRanking, keyword: string) {
+  const tokens = keywordTokens(keyword);
+  if (!tokens.length) return true;
+  const haystack = [row.local_phone, row.peer_phone, row.first_call_time, row.last_call_time].join(" ");
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function recordMatchesKeyword(row: TelecomAnalysisRecord, keyword: string) {
+  const tokens = keywordTokens(keyword);
+  if (!tokens.length) return true;
+  const haystack = [
+    row.local_phone_display,
+    row.peer_phone_display,
+    DIRECTION_LABELS[row.direction] || row.direction,
+    row.call_type,
+    row.bill_type,
+    row.local_carrier,
+    row.peer_carrier,
+    row.local_location,
+    row.peer_location,
+  ].join(" ");
+  return tokens.every((token) => haystack.includes(token));
 }
 
 function TelecomAnalysisPage() {
@@ -61,6 +87,9 @@ function TelecomAnalysisPage() {
   const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({});
   const [records, setRecords] = useState<TelecomAnalysisResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [peerKeyword, setPeerKeyword] = useState("");
+  const [recordKeyword, setRecordKeyword] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -170,24 +199,58 @@ function TelecomAnalysisPage() {
     () => [
       { title: "本机号码", dataIndex: "local_phone", width: 130, ellipsis: true },
       { title: "对方号码", dataIndex: "peer_phone", width: 130, ellipsis: true },
-      { title: "通话次数", dataIndex: "call_count", width: 90 },
+      {
+        title: "通话次数",
+        dataIndex: "call_count",
+        width: 90,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => Number(a.call_count || 0) - Number(b.call_count || 0),
+      },
       {
         title: "累计时长",
         dataIndex: "total_duration_sec",
         width: 110,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => Number(a.total_duration_sec || 0) - Number(b.total_duration_sec || 0),
         render: (v: number) => formatDuration(v),
       },
-      { title: "主叫", dataIndex: "outbound_count", width: 70 },
-      { title: "被叫", dataIndex: "inbound_count", width: 70 },
-      { title: "首次通话", dataIndex: "first_call_time", width: 170, ellipsis: true },
-      { title: "末次通话", dataIndex: "last_call_time", width: 170, ellipsis: true },
+      {
+        title: "主叫",
+        dataIndex: "outbound_count",
+        width: 70,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => Number(a.outbound_count || 0) - Number(b.outbound_count || 0),
+      },
+      {
+        title: "被叫",
+        dataIndex: "inbound_count",
+        width: 70,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => Number(a.inbound_count || 0) - Number(b.inbound_count || 0),
+      },
+      {
+        title: "首次通话",
+        dataIndex: "first_call_time",
+        width: 170,
+        ellipsis: true,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => a.first_call_time.localeCompare(b.first_call_time),
+      },
+      {
+        title: "末次通话",
+        dataIndex: "last_call_time",
+        width: 170,
+        ellipsis: true,
+        sorter: (a: TelecomPeerRanking, b: TelecomPeerRanking) => a.last_call_time.localeCompare(b.last_call_time),
+      },
     ],
     []
   );
 
   const recordColumns = useMemo(
     () => [
-      { title: "通话时间", dataIndex: "call_time", width: 170, ellipsis: true },
+      {
+        title: "通话时间",
+        dataIndex: "call_time",
+        width: 170,
+        ellipsis: true,
+        sorter: (a: TelecomAnalysisRecord, b: TelecomAnalysisRecord) => a.call_time.localeCompare(b.call_time),
+      },
       { title: "本机号码", dataIndex: "local_phone_display", width: 130, ellipsis: true },
       { title: "对方号码", dataIndex: "peer_phone_display", width: 130, ellipsis: true },
       {
@@ -205,6 +268,7 @@ function TelecomAnalysisPage() {
         title: "时长",
         dataIndex: "duration_sec",
         width: 90,
+        sorter: (a: TelecomAnalysisRecord, b: TelecomAnalysisRecord) => Number(a.duration_sec || 0) - Number(b.duration_sec || 0),
         render: (v: number) => formatDuration(v),
       },
       { title: "本机运营商", dataIndex: "local_carrier", width: 100, ellipsis: true },
@@ -214,6 +278,79 @@ function TelecomAnalysisPage() {
     ],
     []
   );
+
+  const filteredPeerRanking = useMemo(
+    () => (records?.summary.peer_ranking || []).filter((row) => peerMatchesKeyword(row, peerKeyword)),
+    [peerKeyword, records]
+  );
+
+  const filteredRecords = useMemo(
+    () => (records?.records || []).filter((row) => recordMatchesKeyword(row, recordKeyword)),
+    [recordKeyword, records]
+  );
+
+  const exportPeerRanking = async () => {
+    if (!filteredPeerRanking.length) {
+      message.warning("当前没有可导出的通联排行");
+      return;
+    }
+    try {
+      const currentBatch = batches.find((item) => item.import_batch_id === batchId);
+      const fileName = `${batchLabel(currentBatch || { import_batch_id: batchId })}_通联排行`;
+      const blob = await api.exportRowsToExcel(
+        filteredPeerRanking as unknown as Record<string, unknown>[],
+        [
+          { key: "local_phone", title: "本机号码" },
+          { key: "peer_phone", title: "对方号码" },
+          { key: "call_count", title: "通话次数" },
+          { key: "total_duration_sec", title: "累计时长(秒)" },
+          { key: "outbound_count", title: "主叫" },
+          { key: "inbound_count", title: "被叫" },
+          { key: "first_call_time", title: "首次通话" },
+          { key: "last_call_time", title: "末次通话" },
+        ],
+        fileName,
+        "通联排行"
+      );
+      downloadBlob(blob, `${fileName}.xlsx`);
+      message.success("通联排行已导出");
+    } catch (err) {
+      message.error((err as Error).message || "导出失败");
+    }
+  };
+
+  const exportRecords = async () => {
+    if (!filteredRecords.length) {
+      message.warning("当前没有可导出的话单明细");
+      return;
+    }
+    try {
+      const currentBatch = batches.find((item) => item.import_batch_id === batchId);
+      const fileName = `${batchLabel(currentBatch || { import_batch_id: batchId })}_话单明细`;
+      const blob = await api.exportRowsToExcel(
+        filteredRecords as unknown as Record<string, unknown>[],
+        [
+          { key: "call_time", title: "通话时间" },
+          { key: "local_phone_display", title: "本机号码" },
+          { key: "peer_phone_display", title: "对方号码" },
+          { key: "direction", title: "方向" },
+          { key: "call_type", title: "通话类型" },
+          { key: "bill_type", title: "话单类型" },
+          { key: "duration_sec", title: "时长(秒)" },
+          { key: "local_carrier", title: "本机运营商" },
+          { key: "peer_carrier", title: "对方运营商" },
+          { key: "peer_location", title: "对方归属地" },
+          { key: "local_location", title: "本机所在地" },
+        ],
+        fileName,
+        "话单明细"
+      );
+      downloadBlob(blob, `${fileName}.xlsx`);
+      message.success("话单明细已导出");
+    } catch (err) {
+      message.error((err as Error).message || "导出失败");
+    }
+  };
 
   return (
     <Card className="app-card" bordered={false}>
@@ -237,85 +374,95 @@ function TelecomAnalysisPage() {
       </Paragraph>
 
       <Form layout="vertical" form={filter}>
-        <Row gutter={16}>
-          <Col xs={24} md={8}>
-            <Form.Item label="本机号码" name="local_phone">
-              <Input placeholder="支持模糊匹配" allowClear />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="对方号码" name="peer_phone">
-              <Input placeholder="支持模糊匹配" allowClear />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="通话类型" name="call_type">
-              <Select allowClear showSearch placeholder="全部" options={(filterOptions.call_type || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="话单类型" name="bill_type">
-              <Select allowClear showSearch placeholder="全部" options={(filterOptions.bill_type || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="方向" name="direction">
-              <Select
-                allowClear
-                placeholder="全部"
-                options={[
-                  { value: "outbound", label: "主叫" },
-                  { value: "inbound", label: "被叫" },
-                  { value: "sms", label: "短信" },
-                ]}
-              />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={8}>
-            <Form.Item label="对方归属地" name="peer_location">
-              <Select allowClear showSearch placeholder="全部" options={(filterOptions.peer_location || []).map((v) => ({ value: v, label: v }))} />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={6}>
-            <Form.Item label="时长下限(秒)" name="duration_min">
-              <InputNumber style={{ width: "100%" }} min={0} />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={6}>
-            <Form.Item label="时长上限(秒)" name="duration_max">
-              <InputNumber style={{ width: "100%" }} min={0} />
-            </Form.Item>
-          </Col>
-          <AnalysisDateTimeFilterFields dateCol={{ xs: 24, md: 6 }} timeCol={{ xs: 24, md: 6 }} />
-        </Row>
+        <Form.Item
+          label="快速筛选"
+          name="quick_query"
+          tooltip="多个关键词用空格隔开，会匹配本机/对方号码、主叫被叫、运营商、归属地、通话类型等字段"
+        >
+          <Input.Search
+            allowClear
+            size="large"
+            placeholder="例如：13800138000 主叫 北京"
+            enterButton="快速筛选"
+            loading={loading}
+            onSearch={() => void runQuery()}
+          />
+        </Form.Item>
         <Space>
           <Button type="primary" loading={loading} onClick={() => void runQuery()}>查询</Button>
+          <Button icon={advancedOpen ? <UpOutlined /> : <DownOutlined />} onClick={() => setAdvancedOpen((open) => !open)}>
+            更多筛选
+          </Button>
           <Button onClick={() => filter.resetFields()}>重置</Button>
         </Space>
+        {advancedOpen ? (
+          <div className="analysis-advanced-filter">
+            <Row gutter={16}>
+              <Col xs={24} md={8}>
+                <Form.Item label="本机号码" name="local_phone">
+                  <Input placeholder="支持模糊匹配" allowClear />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="对方号码" name="peer_phone">
+                  <Input placeholder="支持模糊匹配" allowClear />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="通话类型" name="call_type">
+                  <Select allowClear showSearch placeholder="全部" options={(filterOptions.call_type || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="话单类型" name="bill_type">
+                  <Select allowClear showSearch placeholder="全部" options={(filterOptions.bill_type || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="方向" name="direction">
+                  <Select
+                    allowClear
+                    placeholder="全部"
+                    options={[
+                      { value: "outbound", label: "主叫" },
+                      { value: "inbound", label: "被叫" },
+                      { value: "sms", label: "短信" },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="对方归属地" name="peer_location">
+                  <Select allowClear showSearch placeholder="全部" options={(filterOptions.peer_location || []).map((v) => ({ value: v, label: v }))} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label="时长下限(秒)" name="duration_min">
+                  <InputNumber style={{ width: "100%" }} min={0} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label="时长上限(秒)" name="duration_max">
+                  <InputNumber style={{ width: "100%" }} min={0} />
+                </Form.Item>
+              </Col>
+              <AnalysisDateTimeFilterFields dateCol={{ xs: 24, md: 6 }} timeCol={{ xs: 24, md: 6 }} />
+            </Row>
+          </div>
+        ) : null}
       </Form>
 
       {records && (
         <div style={{ marginTop: 20 }}>
-          {renderDescription(records.description)}
-          <Row gutter={16} style={{ marginTop: 16 }}>
+          <Row gutter={16}>
             <Col xs={24} md={8}>
-              <Card size="small" title="话单条数">
-                <div style={{ fontSize: 22, fontWeight: 600 }}>{records.summary.record_count}</div>
-              </Card>
+              <div className="metric-card analysis-kpi-tile"><div className="metric-title">话单条数</div><div className="metric-value">{records.summary.record_count}</div></div>
             </Col>
             <Col xs={24} md={8}>
-              <Card size="small" title="累计时长">
-                <div style={{ fontSize: 22, fontWeight: 600, color: chartPair.primary }}>
-                  {formatDuration(records.summary.total_duration_sec)}
-                </div>
-              </Card>
+              <div className="metric-card analysis-kpi-tile analysis-kpi-tile-alt"><div className="metric-title">累计时长</div><div className="metric-value">{formatDuration(records.summary.total_duration_sec)}</div></div>
             </Col>
             <Col xs={24} md={8}>
-              <Card size="small" title="通联对象数">
-                <div style={{ fontSize: 22, fontWeight: 600 }}>
-                  {records.summary.peer_ranking.length}
-                </div>
-              </Card>
+              <div className="metric-card analysis-kpi-tile analysis-kpi-tile-warm"><div className="metric-title">通联对象数</div><div className="metric-value">{records.summary.peer_ranking.length}</div></div>
             </Col>
           </Row>
           <Row gutter={16} style={{ marginTop: 16 }}>
@@ -350,28 +497,62 @@ function TelecomAnalysisPage() {
               </Col>
             </Row>
           )}
-          <Table
-            style={{ marginTop: 16 }}
-            size="small"
-            rowKey={(row) => `${row.local_phone}-${row.peer_phone}-${row.first_call_time}`}
-            loading={loading}
-            columns={peerColumns}
-            dataSource={records.summary.peer_ranking}
-            scroll={{ x: 900 }}
-            pagination={{ pageSize: 10, showSizeChanger: true }}
-            title={() => "通联排行"}
-          />
-          <Table
-            style={{ marginTop: 16 }}
-            size="small"
-            rowKey={(row) => `${row.call_time}-${row.local_phone_display}-${row.peer_phone_display}`}
-            loading={loading}
-            columns={recordColumns}
-            dataSource={records.records}
-            scroll={{ x: 1300 }}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
-            title={() => "话单明细"}
-          />
+          <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
+            <div className="bank-section-head analysis-table-toolbar">
+              <Title level={5} style={{ margin: 0 }}>通联排行</Title>
+              <Space wrap>
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索本机/对方号码"
+                  value={peerKeyword}
+                  onChange={(event) => setPeerKeyword(event.target.value)}
+                  style={{ width: 240 }}
+                />
+                <Button icon={<DownloadOutlined />} disabled={!filteredPeerRanking.length} onClick={() => void exportPeerRanking()}>
+                  导出Excel
+                </Button>
+              </Space>
+            </div>
+            <Table
+              className="analysis-data-table"
+              size="middle"
+              rowKey={(row) => `${row.local_phone}-${row.peer_phone}-${row.first_call_time}`}
+              loading={loading}
+              columns={peerColumns}
+              dataSource={filteredPeerRanking}
+              scroll={{ x: 900 }}
+              pagination={{ pageSize: 10, showSizeChanger: true }}
+            />
+          </div>
+          <div className="app-card analysis-table-card" style={{ marginTop: 16 }}>
+            <div className="bank-section-head analysis-table-toolbar">
+              <Title level={5} style={{ margin: 0 }}>话单明细</Title>
+              <Space wrap>
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索号码、运营商、归属地"
+                  value={recordKeyword}
+                  onChange={(event) => setRecordKeyword(event.target.value)}
+                  style={{ width: 260 }}
+                />
+                <Button icon={<DownloadOutlined />} disabled={!filteredRecords.length} onClick={() => void exportRecords()}>
+                  导出Excel
+                </Button>
+              </Space>
+            </div>
+            <Table
+              className="analysis-data-table"
+              size="middle"
+              rowKey={(row) => `${row.call_time}-${row.local_phone_display}-${row.peer_phone_display}`}
+              loading={loading}
+              columns={recordColumns}
+              dataSource={filteredRecords}
+              scroll={{ x: 1300 }}
+              pagination={{ pageSize: 20, showSizeChanger: true }}
+            />
+          </div>
         </div>
       )}
     </Card>

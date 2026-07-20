@@ -9,7 +9,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.services.fusion.identifier_norm import normalize_identifier, parse_person_names_from_json_field
+from app.services.fusion.identifier_norm import (
+    normalize_bank_name,
+    normalize_identifier,
+    parse_person_names_from_json_field,
+    split_scoped_bank_account,
+)
 from app.services.fusion.person_link_service import PersonLinkService
 from app.services.integration.commercial.ic_ingest_service import normalize_enterprise_name
 from app.services.integration.telecom.phone_utils import normalize_phone
@@ -598,9 +603,19 @@ class FusionQueryService:
         norm = normalize_identifier("person_name", value)
         return bool(norm and norm in names)
 
-    def _match_acct(self, value: str, accts: set[str]) -> bool:
+    def _match_acct(self, value: str, accts: set[str], bank_name: str = "") -> bool:
         norm = normalize_identifier("bank_acct", value)
-        return bool(norm and norm in accts)
+        if not norm:
+            return False
+        bank_key = normalize_bank_name(bank_name)
+        for stored in accts:
+            stored_bank, stored_acct = split_scoped_bank_account(stored)
+            if stored_acct != norm:
+                continue
+            if stored_bank and (not bank_key or stored_bank != bank_key):
+                continue
+            return True
+        return False
 
     def _match_phone(self, value: str, phones: set[str]) -> bool:
         norm = normalize_phone(value)
@@ -618,34 +633,35 @@ class FusionQueryService:
         out: list[FusionRecord] = []
         rows = self._client.query_all(
             """
-            SELECT std_id, person_name, acct_no, txn_time, txn_amount, txn_direction,
+            SELECT std_id, bank_name, person_name, acct_no, txn_time, txn_amount, txn_direction,
                    counterparty_name, counterparty_account, summary, remark
             FROM std_bank_txn WHERE import_batch_id=?;
             """,
             (batch_id,),
         )
         for row in rows:
-            person_name = str(row[1] or "")
-            acct_no = str(row[2] or "")
-            counterparty = str(row[6] or "")
-            counterparty_acct = str(row[7] or "")
+            bank_name = str(row[1] or "")
+            person_name = str(row[2] or "")
+            acct_no = str(row[3] or "")
+            counterparty = str(row[7] or "")
+            counterparty_acct = str(row[8] or "")
             if not (
                 self._match_name(person_name, names)
-                or self._match_acct(acct_no, accts)
+                or self._match_acct(acct_no, accts, bank_name)
                 or self._match_name(counterparty, names)
-                or self._match_acct(counterparty_acct, accts)
+                or self._match_acct(counterparty_acct, accts, bank_name)
             ):
                 continue
-            amount = self._to_float(row[4])
-            direction = str(row[5] or "")
+            amount = self._to_float(row[5])
+            direction = str(row[6] or "")
             out.append(
                 FusionRecord(
                     record_type="bank_txn",
                     title=f"银行流水 {person_name}",
-                    time=str(row[3] or "") or None,
+                    time=str(row[4] or "") or None,
                     amount=amount,
                     counterparty=counterparty or counterparty_acct,
-                    summary=str(row[8] or row[9] or ""),
+                    summary=str(row[9] or row[10] or ""),
                     direction=direction,
                     batch_id=batch_id,
                     source_ref={

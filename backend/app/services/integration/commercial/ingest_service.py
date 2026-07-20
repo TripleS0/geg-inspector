@@ -89,6 +89,7 @@ class CommercialIngestService(BankIngestService):
         import_batch_id: str | None = None,
     ) -> IngestResult:
         """Ingest commercial files into one batch; multiple files/plants merge into unified storage."""
+        self._ensure_meta_columns()
         batch_id = self._resolve_import_batch_id(import_batch_id, source_type)
         excel_paths = [
             path
@@ -131,7 +132,7 @@ class CommercialIngestService(BankIngestService):
             detail_df = self._apply_purchaser(detail_df, file_purchaser)
 
             file_hash = self._hash_file(path)
-            file_id = self._insert_file_record(batch_id, path, file_hash, file_purchaser, source_type)
+            file_id = self._insert_file_record(batch_id, path, file_hash, file_purchaser, "", source_type)
             sheet_name = "商务网明细"
             raw_columns = [str(col).strip() for col in detail_df.columns]
             fingerprint = self._build_fingerprint(

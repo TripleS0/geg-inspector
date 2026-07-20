@@ -30,6 +30,7 @@ export interface TablePreview {
 }
 
 export interface BankFilter {
+  quick_query?: string;
   bank_type?: string;
   person_name?: string;
   acct_no?: string;
@@ -47,6 +48,39 @@ export interface BankRecordsResponse {
   records: Array<Record<string, string>>;
   summary: Record<string, unknown>;
   description: string;
+}
+
+export interface BankPersonIdentity {
+  person_name: string;
+  id_no: string;
+  bank_count: number;
+  account_count: number;
+  account_nos: string[];
+  unknown_bank?: string;
+  unknown_acct_no?: string;
+  unknown_source_name?: string;
+}
+
+export interface BankPersonFundGroup {
+  bank_type: string;
+  counterparty_name: string;
+  counterparty_account: string;
+  counterparty_category: "company_platform" | "individual_or_unknown";
+  txn_count: number;
+  income_count: number;
+  expense_count: number;
+  income_total: number;
+  expense_total: number;
+  net_amount: number;
+}
+
+export interface BankPersonFundsResponse {
+  identity: { person_name: string; id_no: string };
+  accounts: Array<{ bank_type: string; acct_no: string }>;
+  summary: Record<string, number>;
+  groups: BankPersonFundGroup[];
+  organization_groups: BankPersonFundGroup[];
+  records: Array<Record<string, string>>;
 }
 
 export interface ModuleParams {
@@ -156,6 +190,7 @@ export interface DataCenterDashboardResponse {
 }
 
 export interface CommercialAnalysisFilter {
+  quick_query?: string;
   company_name?: string;
   purchaser?: string;
   inquiry_no?: string;
@@ -253,6 +288,7 @@ export interface CommercialCoBidAnalysisResponse {
 }
 
 export interface WechatAnalysisFilter {
+  quick_query?: string;
   user_name?: string;
   debit_credit_type?: string;
   counterparty_name?: string;
@@ -304,6 +340,7 @@ export interface WechatAnalysisResponse {
 }
 
 export interface TelecomAnalysisFilter {
+  quick_query?: string;
   local_phone?: string;
   peer_phone?: string;
   call_type?: string;
@@ -505,12 +542,23 @@ export interface QichachaLogItem {
 
 export type BankTemplateType = "account_profile" | "txn_detail";
 
+export interface BankCatalogItem {
+  bank_id: string;
+  display_name: string;
+  aliases: string[];
+  is_builtin: boolean;
+  is_active: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface UserBankTemplate {
   id?: number;
   template_id?: string;
   display_name: string;
   template_type: BankTemplateType;
   bank_display_name: string;
+  bank_id?: string;
   bank_keywords: string[];
   sheet_keywords: string[];
   field_map: Record<string, string[]>;
@@ -521,8 +569,22 @@ export interface UserBankTemplate {
   direction_rules: Record<string, string>;
   datetime_patterns?: Record<string, unknown> | null;
   is_active?: number;
+  is_builtin?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface BankImportPreview {
+  file_name: string;
+  suggested_bank_id: string;
+  suggested_bank_name: string;
+  sheets: Array<{
+    sheet_name: string;
+    template_type: BankTemplateType;
+    header_row_0based: number;
+    headers: string[];
+    suggested_template_id: string;
+  }>;
 }
 
 export interface BankTemplateAnalyzeResult {
@@ -533,6 +595,8 @@ export interface BankTemplateAnalyzeResult {
   header_row_candidates: Array<{ row_0based: number; score: number }>;
   source_headers: string[];
   suggested_mapping: Record<string, string>;
+  suggested_template_id?: string;
+  suggested_bank_name?: string;
   direction_distinct_values: string[];
   datetime_analysis: { merged_preview?: string[] };
   sample_row_count: number;
@@ -882,6 +946,7 @@ export const api = {
     bankName: string,
     batchName?: string,
     targetBatchId?: string,
+    sheetAssignments?: Record<string, { bank_id: string; sheets: Record<string, { template_id: string }> }>,
   ) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
@@ -890,6 +955,9 @@ export const api = {
     }
     if (targetBatchId?.trim()) {
       form.append("target_batch_id", targetBatchId.trim());
+    }
+    if (sheetAssignments && Object.keys(sheetAssignments).length) {
+      form.append("sheet_assignments_json", JSON.stringify(sheetAssignments));
     }
     const url = `${API_BASE}/api/upload/${sourceType}?bank_name=${encodeURIComponent(bankName)}`;
     const res = await fetch(url, { method: "POST", body: form });
@@ -998,6 +1066,39 @@ export const api = {
       body: JSON.stringify(filters),
     }),
 
+  bankPersonIdentities: (batchId: string) =>
+    http<{ items: BankPersonIdentity[] }>(
+      `/api/bank/${encodeURIComponent(batchId)}/person-identities`
+    ),
+
+  bankPersonFunds: (batchId: string, personName: string, idNo: string) =>
+    http<BankPersonFundsResponse>(
+      `/api/bank/${encodeURIComponent(batchId)}/person-funds`,
+      {
+        method: "POST",
+        body: JSON.stringify({ person_name: personName, id_no: idNo }),
+      }
+    ),
+
+  exportBankRecords: async (batchId: string, filters: BankFilter, fileName?: string) => {
+    const res = await fetch(`${API_BASE}/api/bank/${encodeURIComponent(batchId)}/records/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...filters, file_name: fileName || "" }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
+
   bankModule: (batchId: string, moduleId: string, params: ModuleParams) =>
     http<Record<string, unknown>>(
       `/api/bank/${encodeURIComponent(batchId)}/modules/${encodeURIComponent(moduleId)}`,
@@ -1071,6 +1172,56 @@ export const api = {
       body: JSON.stringify({ output_path: outputPath || null }),
     }),
 
+  exportRowsToExcel: async (
+    rows: Record<string, unknown>[],
+    columns: Array<{ key: string; title: string }>,
+    fileName: string,
+    sheetName = "明细"
+  ) => {
+    const res = await fetch(`${API_BASE}/api/export/rows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, columns, file_name: fileName, sheet_name: sheetName }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
+
+  exportSheetsToExcel: async (
+    sheets: Array<{
+      sheet_name: string;
+      rows: Record<string, unknown>[];
+      columns: Array<{ key: string; title: string }>;
+    }>,
+    fileName: string
+  ) => {
+    const res = await fetch(`${API_BASE}/api/export/rows`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sheets, file_name: fileName }),
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = (await res.json()) as { detail?: string };
+        detail = data?.detail || JSON.stringify(data);
+      } catch {
+        // ignore
+      }
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.blob();
+  },
+
   qichachaQueryLogs: (limit = 100, offset = 0, runId?: string) =>
     http<{ items: QichachaLogItem[] }>(
       `/api/qichacha/query-logs?limit=${limit}&offset=${offset}${
@@ -1104,9 +1255,23 @@ export const api = {
 
   listBankTemplates: () => http<{ items: UserBankTemplate[] }>("/api/bank-templates"),
 
+  listBanks: (activeOnly = false) => http<{ items: BankCatalogItem[] }>(`/api/banks?active_only=${activeOnly ? "true" : "false"}`),
+
+  createBank: (body: { display_name: string; aliases?: string[] }) =>
+    http<BankCatalogItem>("/api/banks", { method: "POST", body: JSON.stringify(body) }),
+
+  updateBank: (bankId: string, body: { display_name?: string; aliases?: string[]; is_active?: number }) =>
+    http<BankCatalogItem>(`/api/banks/${encodeURIComponent(bankId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+
   createBankTemplate: (body: UserBankTemplate) =>
     http<UserBankTemplate>("/api/bank-templates", {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateBankTemplate: (templateId: string, body: Partial<UserBankTemplate>) =>
+    http<UserBankTemplate>(`/api/bank-templates/${encodeURIComponent(templateId)}`, {
+      method: "PATCH",
       body: JSON.stringify(body),
     }),
 
@@ -1402,6 +1567,18 @@ export async function listBankTemplateSampleSheets(file: File): Promise<string[]
   }
   const data = (await res.json()) as { sheets?: string[] };
   return data.sheets || [];
+}
+
+export async function previewBankImportFile(file: File): Promise<BankImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample/sheets`, { method: "POST", body: form });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { detail?: string };
+    throw new Error(data.detail || `预览失败（${res.status}）`);
+  }
+  const data = await res.json() as { preview: BankImportPreview };
+  return data.preview;
 }
 
 export async function queryQichachaBasicDetails(params: {

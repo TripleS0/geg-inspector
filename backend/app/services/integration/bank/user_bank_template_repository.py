@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.services.integration.bank.template_library import BankTemplate
+from app.services.integration.bank.bank_catalog_repository import BankCatalogRepository
 from app.services.shared.db.sqlite_client import SqliteClient
 
 
@@ -25,6 +26,7 @@ class UserBankTemplateRecord:
     display_name: str
     template_type: str
     bank_display_name: str
+    bank_id: str
     bank_keywords: list[str]
     sheet_keywords: list[str]
     field_map: dict[str, list[str]]
@@ -93,6 +95,8 @@ def record_to_bank_template(rec: UserBankTemplateRecord) -> BankTemplate:
         signature_columns=sig,
         user_template_id=rec.template_id,
         template_type=rec.template_type,
+        direction_rules=dict(rec.direction_rules),
+        datetime_patterns=rec.datetime_patterns,
     )
 
 
@@ -103,6 +107,7 @@ def _row_to_record(row: tuple[Any, ...]) -> UserBankTemplateRecord:
         display_name=str(row[2]),
         template_type=str(row[3]),
         bank_display_name=str(row[4]),
+        bank_id=str(row[17] or ""),
         bank_keywords=_parse_json_list(str(row[5]) if row[5] else "[]", []),
         sheet_keywords=_parse_json_list(str(row[6]) if row[6] else "[]", []),
         field_map=_parse_field_map(str(row[7])),
@@ -134,6 +139,7 @@ class UserBankTemplateRepository:
                 display_name TEXT NOT NULL,
                 template_type TEXT NOT NULL,
                 bank_display_name TEXT NOT NULL,
+                bank_id TEXT,
                 bank_keywords_json TEXT NOT NULL,
                 sheet_keywords_json TEXT NOT NULL,
                 field_map_json TEXT NOT NULL,
@@ -149,6 +155,10 @@ class UserBankTemplateRepository:
             );
             """
         )
+        names = {str(row[1]) for row in self._client.query_all("PRAGMA table_info(meta_user_bank_template);")}
+        if "bank_id" not in names:
+            self._client.execute("ALTER TABLE meta_user_bank_template ADD COLUMN bank_id TEXT;")
+        BankCatalogRepository(self._client)
 
     def list_active_ordered(self) -> list[UserBankTemplateRecord]:
         self.ensure_table()
@@ -157,7 +167,7 @@ class UserBankTemplateRepository:
             SELECT id, template_id, display_name, template_type, bank_display_name,
                    bank_keywords_json, sheet_keywords_json, field_map_json, signature_columns_json,
                    header_row_0based, match_priority, template_group_id,
-                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at
+                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at, bank_id
             FROM meta_user_bank_template
             WHERE is_active=1
             ORDER BY match_priority DESC, id ASC;
@@ -172,7 +182,7 @@ class UserBankTemplateRepository:
             SELECT id, template_id, display_name, template_type, bank_display_name,
                    bank_keywords_json, sheet_keywords_json, field_map_json, signature_columns_json,
                    header_row_0based, match_priority, template_group_id,
-                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at
+                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at, bank_id
             FROM meta_user_bank_template
             ORDER BY match_priority DESC, id ASC;
             """
@@ -186,7 +196,7 @@ class UserBankTemplateRepository:
             SELECT id, template_id, display_name, template_type, bank_display_name,
                    bank_keywords_json, sheet_keywords_json, field_map_json, signature_columns_json,
                    header_row_0based, match_priority, template_group_id,
-                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at
+                   direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at, bank_id
             FROM meta_user_bank_template
             WHERE template_id=?
             LIMIT 1;
@@ -207,6 +217,7 @@ class UserBankTemplateRepository:
         display_name: str,
         template_type: str,
         bank_display_name: str,
+        bank_id: str | None = None,
         bank_keywords: list[str],
         sheet_keywords: list[str],
         field_map: dict[str, list[str]],
@@ -221,20 +232,29 @@ class UserBankTemplateRepository:
         self.ensure_table()
         tid = template_id or f"user_{uuid4().hex[:12]}"
         now = _utc_now_iso()
+        catalog = BankCatalogRepository(self._client)
+        bank = catalog.get(bank_id or "") if bank_id else catalog.get_by_name(bank_display_name)
+        if bank is None:
+            bank = catalog.create(bank_display_name, bank_keywords)
+        if not bank.is_active:
+            raise ValueError("停用银行不能创建新模板")
+        bank_id = bank.bank_id
+        bank_display_name = bank.display_name
         self._client.execute(
             """
             INSERT INTO meta_user_bank_template (
-                template_id, display_name, template_type, bank_display_name,
+                template_id, display_name, template_type, bank_display_name, bank_id,
                 bank_keywords_json, sheet_keywords_json, field_map_json, signature_columns_json,
                 header_row_0based, match_priority, template_group_id,
                 direction_rules_json, datetime_patterns_json, is_active, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?);
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?);
             """,
             (
                 tid,
                 display_name,
                 template_type,
                 bank_display_name,
+                bank_id,
                 json.dumps(bank_keywords, ensure_ascii=False),
                 json.dumps(sheet_keywords, ensure_ascii=False),
                 json.dumps(field_map, ensure_ascii=False),
@@ -258,6 +278,7 @@ class UserBankTemplateRepository:
         display_name: str | None = None,
         template_type: str | None = None,
         bank_display_name: str | None = None,
+        bank_id: str | None = None,
         bank_keywords: list[str] | None = None,
         sheet_keywords: list[str] | None = None,
         field_map: dict[str, list[str]] | None = None,
@@ -276,6 +297,13 @@ class UserBankTemplateRepository:
         display_name = display_name if display_name is not None else rec.display_name
         template_type = template_type if template_type is not None else rec.template_type
         bank_display_name = bank_display_name if bank_display_name is not None else rec.bank_display_name
+        target_bank_id = bank_id if bank_id is not None else rec.bank_id
+        catalog = BankCatalogRepository(self._client)
+        bank = catalog.get(target_bank_id) if target_bank_id else catalog.get_by_name(bank_display_name)
+        if bank is None:
+            raise ValueError("银行分类不存在")
+        bank_display_name = bank.display_name
+        target_bank_id = bank.bank_id
         bank_keywords = bank_keywords if bank_keywords is not None else rec.bank_keywords
         sheet_keywords = sheet_keywords if sheet_keywords is not None else rec.sheet_keywords
         field_map = field_map if field_map is not None else rec.field_map
@@ -290,7 +318,7 @@ class UserBankTemplateRepository:
         self._client.execute(
             """
             UPDATE meta_user_bank_template SET
-                display_name=?, template_type=?, bank_display_name=?,
+                display_name=?, template_type=?, bank_display_name=?, bank_id=?,
                 bank_keywords_json=?, sheet_keywords_json=?, field_map_json=?, signature_columns_json=?,
                 header_row_0based=?, match_priority=?, template_group_id=?,
                 direction_rules_json=?, datetime_patterns_json=?, is_active=?, updated_at=?
@@ -300,6 +328,7 @@ class UserBankTemplateRepository:
                 display_name,
                 template_type,
                 bank_display_name,
+                target_bank_id,
                 json.dumps(bank_keywords, ensure_ascii=False),
                 json.dumps(sheet_keywords, ensure_ascii=False),
                 json.dumps(field_map, ensure_ascii=False),

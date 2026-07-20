@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from app.application.bootstrap import bootstrap_database
 from app.application.dataset_use_cases import DatasetUseCase
@@ -57,6 +58,7 @@ class ImportUseCase:
         batch_name: str | None = None,
         import_batch_id: str | None = None,
         standardize: bool = True,
+        sheet_assignments: dict[str, Any] | None = None,
     ) -> ImportSummary:
         """Import files and run source-specific post-processing."""
         source_key = (source_type or "bank").strip().lower()
@@ -72,6 +74,13 @@ class ImportUseCase:
                 bank_name,
                 source_key,
                 import_batch_id=resolved_batch_id,
+            )
+        elif source_key == "bank":
+            ingest_result = ingest_cls.ingest_files(
+                file_paths,
+                bank_name,
+                source_key,
+                sheet_assignments=sheet_assignments,
             )
         else:
             ingest_result = ingest_cls.ingest_files(file_paths, bank_name, source_key)

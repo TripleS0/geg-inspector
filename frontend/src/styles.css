@@ -462,6 +462,16 @@ html, body, #root {
 
 .fusion-wizard-import-queue {
   margin-top: 24px;
+  max-height: min(65vh, 720px);
+  overflow-y: auto;
+}
+
+.fusion-wizard-import-queue .ant-list-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #fff;
+  box-shadow: 0 8px 12px -14px rgba(48, 55, 66, 0.5);
 }
 
 .fusion-wizard-import-queue .ant-list-item {
@@ -1092,6 +1102,167 @@ html, body, #root {
   margin-top: 6px;
 }
 
+.metric-card {
+  min-height: 116px;
+  overflow: hidden;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(92, 112, 148, 0.1);
+}
+
+.metric-title {
+  padding: 12px 16px;
+  color: #25272d;
+  border-bottom: 1px solid rgba(92, 112, 148, 0.08);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.metric-value {
+  padding: 18px 16px 20px;
+  color: #24262d;
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+}
+
+.metric-primary {
+  color: #e85d45;
+}
+
+.metric-secondary {
+  color: #f2bd55;
+}
+
+.analysis-kpi-tile {
+  min-height: 96px;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 16px;
+  color: #fff;
+  background: linear-gradient(135deg, #ffb84d 0%, #e84933 100%);
+  box-shadow: 0 12px 28px rgba(218, 68, 42, 0.16);
+}
+
+.analysis-kpi-tile-alt {
+  background: linear-gradient(135deg, #f0a84d 0%, #d94832 100%);
+}
+
+.analysis-kpi-tile-warm {
+  background: linear-gradient(135deg, #e8954a 0%, #c73a26 100%);
+}
+
+.analysis-kpi-tile-gold {
+  background: linear-gradient(135deg, #f4c26b 0%, #d9775e 100%);
+}
+
+.analysis-kpi-tile .metric-title {
+  padding: 0;
+  border-bottom: 0;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+.analysis-kpi-tile .metric-value {
+  padding: 0;
+  margin-top: 8px;
+  color: #fff;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.person-fund-kpi-row .ant-col {
+  display: flex;
+}
+
+.person-fund-kpi {
+  width: 100%;
+  min-height: 82px;
+  padding: 13px 16px;
+  border: 1px solid #e3e6ea;
+  border-left: 3px solid #7c8794;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(34, 39, 46, 0.04);
+}
+
+.person-fund-kpi .metric-title {
+  padding: 0;
+  border: 0;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.person-fund-kpi .metric-value {
+  padding: 0;
+  margin-top: 6px;
+  color: #24282f;
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 30px;
+}
+
+.person-fund-kpi.is-primary {
+  min-height: 96px;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #ffb84d 0%, #e84933 100%);
+  box-shadow: 0 10px 24px rgba(218, 68, 42, 0.14);
+}
+
+.person-fund-kpi.is-primary .metric-title {
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.person-fund-kpi.is-primary .metric-value {
+  margin-top: 8px;
+  color: #ffffff;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.person-fund-kpi.is-income {
+  border-left-color: #3f8062;
+}
+
+.person-fund-kpi.is-income .metric-value {
+  color: #286b4d;
+}
+
+.person-fund-kpi.is-expense {
+  border-left-color: #c65243;
+}
+
+.person-fund-kpi.is-expense .metric-value {
+  color: #ad3e32;
+}
+
+.person-fund-kpi.is-net {
+  border-left-color: #b28a3c;
+}
+
+.person-fund-kpi.is-net .metric-value {
+  color: #85651f;
+}
+
+.person-fund-account-tag {
+  margin: 0;
+  padding: 3px 8px;
+  border-color: #dfe3e8;
+  border-radius: 4px;
+  color: #4b5563;
+  background: #f7f8fa;
+}
+
 .analysis-description {
   display: grid;
   gap: 10px;
@@ -1110,6 +1281,80 @@ html, body, #root {
 .analysis-empty {
   margin: 0 !important;
   color: #8a7380;
+}
+
+.bank-advanced-filter,
+.analysis-advanced-filter {
+  margin-top: 14px;
+  padding: 14px 14px 2px;
+  border-radius: 14px;
+  background: rgba(255, 248, 238, 0.62);
+  border: 1px solid rgba(224, 128, 74, 0.12);
+}
+
+.commercial-advanced-filter {
+  margin-top: 16px;
+}
+
+.bank-anomaly-panel {
+  margin-top: 16px;
+}
+
+.bank-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.bank-anomaly-card {
+  width: 100%;
+  min-height: 116px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(226, 118, 68, 0.12);
+  box-shadow: 0 10px 24px rgba(133, 78, 43, 0.06);
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.bank-anomaly-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(217, 72, 50, 0.28);
+  box-shadow: 0 14px 30px rgba(172, 83, 39, 0.1);
+}
+
+.bank-anomaly-card.is-hot {
+  background: linear-gradient(135deg, rgba(255, 246, 230, 0.98), rgba(255, 255, 255, 0.92));
+}
+
+.bank-anomaly-card span,
+.bank-anomaly-card strong,
+.bank-anomaly-card em {
+  display: block;
+}
+
+.bank-anomaly-card span {
+  color: #6f625d;
+  font-weight: 700;
+}
+
+.bank-anomaly-card strong {
+  margin-top: 8px;
+  color: #d94832;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.bank-anomaly-card em {
+  margin-top: 8px;
+  color: #8a7a73;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .evidence-list {
@@ -1326,19 +1571,18 @@ html, body, #root {
 }
 
 .tables-preview-cell {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  display: block;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
-  word-break: break-word;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   line-height: 1.45;
-  max-width: 320px;
 }
 
 .tables-preview-cell--empty {
   display: inline;
   color: #b0a09a;
-  -webkit-line-clamp: unset;
 }
 
 .tables-preview-tooltip {
@@ -3250,6 +3494,83 @@ html, body, #root {
 .commercial-co-bid-link {
   padding-inline: 4px;
 }
+
+.analysis-table-card {
+  border-radius: 16px;
+  border: 1px solid rgba(224, 128, 74, 0.12);
+  box-shadow: 0 12px 30px rgba(133, 78, 43, 0.06);
+}
+
+.analysis-table-toolbar {
+  margin-bottom: 16px;
+}
+
+.analysis-table-toolbar h5.ant-typography {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.analysis-table-toolbar .ant-btn {
+  height: 40px;
+  border-radius: 12px;
+  padding-inline: 18px;
+  font-weight: 600;
+}
+
+.analysis-data-table .ant-table {
+  background: transparent;
+}
+
+.analysis-data-table .ant-table-container {
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.analysis-data-table .ant-table-thead > tr > th {
+  background: rgba(255, 248, 238, 0.95) !important;
+  color: #1f232d;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(224, 128, 74, 0.12) !important;
+}
+
+.analysis-data-table .ant-table-thead > tr > th::before {
+  background-color: rgba(224, 128, 74, 0.14) !important;
+}
+
+.analysis-data-table .ant-table-tbody > tr > td {
+  color: #242936;
+  font-size: 14px;
+  line-height: 1.5;
+  border-bottom: 1px solid rgba(148, 123, 104, 0.12);
+}
+
+.analysis-data-table .ant-table-tbody > tr:hover > td {
+  background: rgba(255, 244, 232, 0.55) !important;
+}
+
+.analysis-data-table .ant-table-cell {
+  padding: 14px 12px !important;
+}
+
+.analysis-data-table .ant-pagination {
+  margin: 18px 0 0 !important;
+}
+
+.analysis-table-amount {
+  color: #b33222;
+  font-variant-numeric: tabular-nums;
+}
+
+.analysis-cell-ellipsis {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
 
 @media (max-width: 768px) {
   .commercial-analysis-page .commercial-analysis-header {

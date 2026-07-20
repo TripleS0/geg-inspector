@@ -6,7 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.fusion.identifier_norm import normalize_identifier, parse_person_names_from_json_field
+from app.services.fusion.identifier_norm import (
+    normalize_identifier,
+    normalize_scoped_bank_account,
+    parse_person_names_from_json_field,
+)
 from app.services.shared.db.sqlite_client import SqliteClient
 
 _SOURCE_PRIORITY = {"enterprise": 3, "bank": 2, "commercial": 1, "wechat": 1, "telecom": 1}
@@ -124,7 +128,17 @@ class IdentifierDiscoveryService:
                 return False
             new_source = str(item.get("source_type") or "")
             old_source = str(existing[0][2] or "")
-            if self._should_upgrade_candidate_source(identifier_type, old_source, new_source):
+            new_ref = item.get("source_ref") or {}
+            try:
+                old_ref = json.loads(str(existing[0][3] or "{}"))
+            except json.JSONDecodeError:
+                old_ref = {}
+            role_changed = (
+                identifier_type == "person_name"
+                and bool(new_ref.get("role"))
+                and old_ref.get("role") != new_ref.get("role")
+            )
+            if role_changed or self._should_upgrade_candidate_source(identifier_type, old_source, new_source):
                 self._client.execute(
                     """
                     UPDATE rel_identifier_candidate
@@ -135,7 +149,7 @@ class IdentifierDiscoveryService:
                         str(item.get("display_value") or identifier_norm),
                         new_source,
                         str(item.get("source_batch_id") or ""),
-                        json.dumps(item.get("source_ref") or {}, ensure_ascii=False),
+                        json.dumps(new_ref, ensure_ascii=False),
                         int(existing[0][0]),
                     ),
                 )
@@ -193,8 +207,9 @@ class IdentifierDiscoveryService:
         source_type: str,
         batch_id: str,
         source_ref: dict[str, Any],
+        identifier_norm: str | None = None,
     ) -> None:
-        norm = normalize_identifier(identifier_type, value)
+        norm = identifier_norm if identifier_norm is not None else normalize_identifier(identifier_type, value)
         if not norm:
             return
         items.append(
@@ -212,7 +227,7 @@ class IdentifierDiscoveryService:
         items: list[dict[str, Any]] = []
         for row in self._client.query_all(
             """
-            SELECT account_id, person_name, acct_no, mobile, id_no, source_file_id, source_sheet
+            SELECT account_id, bank_name, person_name, acct_no, mobile, id_no, source_file_id, source_sheet
             FROM std_bank_account WHERE import_batch_id=?;
             """,
             (batch_id,),
@@ -222,23 +237,49 @@ class IdentifierDiscoveryService:
                 "table": "std_bank_account",
                 "pk": {"account_id": int(row[0])},
                 "batch_id": batch_id,
+                "bank_name": str(row[1] or ""),
+                "role": "account_owner",
             }
-            self._add_item(items, identifier_type="person_name", value=str(row[1] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="bank_acct", value=str(row[2] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="phone", value=str(row[3] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="id_no", value=str(row[4] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
+            self._add_item(items, identifier_type="person_name", value=str(row[2] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
+            self._add_item(
+                items,
+                identifier_type="bank_acct",
+                value=str(row[3] or ""),
+                source_type="bank",
+                batch_id=batch_id,
+                source_ref=ref,
+                identifier_norm=normalize_scoped_bank_account(str(row[1] or ""), str(row[3] or "")),
+            )
+            self._add_item(items, identifier_type="phone", value=str(row[4] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
+            self._add_item(items, identifier_type="id_no", value=str(row[5] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
         for row in self._client.query_all(
             """
-            SELECT std_id, person_name, acct_no, counterparty_name, counterparty_account
+            SELECT std_id, bank_name, person_name, acct_no, counterparty_name, counterparty_account
             FROM std_bank_txn WHERE import_batch_id=?;
             """,
             (batch_id,),
         ):
-            ref = {"layer": "std", "table": "std_bank_txn", "pk": {"std_id": int(row[0])}, "batch_id": batch_id}
-            self._add_item(items, identifier_type="person_name", value=str(row[1] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="bank_acct", value=str(row[2] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="person_name", value=str(row[3] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
-            self._add_item(items, identifier_type="bank_acct", value=str(row[4] or ""), source_type="bank", batch_id=batch_id, source_ref=ref)
+            ref = {
+                "layer": "std",
+                "table": "std_bank_txn",
+                "pk": {"std_id": int(row[0])},
+                "batch_id": batch_id,
+                "bank_name": str(row[1] or ""),
+            }
+            owner_ref = {**ref, "role": "account_owner"}
+            counterparty_ref = {**ref, "role": "counterparty"}
+            self._add_item(items, identifier_type="person_name", value=str(row[2] or ""), source_type="bank", batch_id=batch_id, source_ref=owner_ref)
+            self._add_item(
+                items,
+                identifier_type="bank_acct",
+                value=str(row[3] or ""),
+                source_type="bank",
+                batch_id=batch_id,
+                source_ref=owner_ref,
+                identifier_norm=normalize_scoped_bank_account(str(row[1] or ""), str(row[3] or "")),
+            )
+            self._add_item(items, identifier_type="person_name", value=str(row[4] or ""), source_type="bank", batch_id=batch_id, source_ref=counterparty_ref)
+            self._add_item(items, identifier_type="bank_acct", value=str(row[5] or ""), source_type="bank", batch_id=batch_id, source_ref=counterparty_ref)
         return items
 
     def _scan_wechat(self, batch_id: str) -> list[dict[str, Any]]:
