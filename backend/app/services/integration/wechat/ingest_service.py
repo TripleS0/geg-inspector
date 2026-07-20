@@ -59,6 +59,7 @@ class WechatIngestService(BankIngestService):
 
     def ingest_files(self, file_paths: list[str], bank_name: str, source_type: str = "wechat") -> IngestResult:
         """Ingest WeChat transfer files into normalized raw rows."""
+        self._ensure_meta_columns()
         import_batch_id = str(uuid4())
         sheets_total = 0
         rows_total = 0
