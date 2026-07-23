@@ -653,6 +653,32 @@ class FusionTests(unittest.TestCase):
         self.assertTrue(txn_edges)
         self.assertGreaterEqual(max(e["record_count"] for e in txn_edges), 3)
 
+        # Same-name persons: edge detail must resolve via counterparty account, not display name.
+        edge = max(txn_edges, key=lambda item: int(item.get("record_count") or 0))
+        detail = self.fusion_uc.graph_selection_detail(
+            case.case_id,
+            {
+                "kind": "edge",
+                "source": edge["source"],
+                "target": edge["target"],
+                "edge_type": "bank_txn",
+            },
+        )
+        self.assertGreaterEqual(len(detail["records"]), 3)
+        self.assertTrue(all(r["record_type"] == "bank_txn" for r in detail["records"]))
+
+        persons_sorted = sorted(persons, key=lambda p: p["person_id"])
+        person_detail = self.fusion_uc.graph_selection_detail(
+            case.case_id,
+            {
+                "kind": "edge",
+                "source": f"person:{persons_sorted[0]['person_id']}",
+                "target": f"person:{persons_sorted[1]['person_id']}",
+                "edge_type": "bank_txn",
+            },
+        )
+        self.assertGreaterEqual(len(person_detail["records"]), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

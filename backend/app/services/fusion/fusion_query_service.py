@@ -33,6 +33,7 @@ class FusionRecord:
     direction: str = ""
     batch_id: str = ""
     role_hint: str = ""
+    counterparty_account: str = ""
 
 
 class FusionQueryService:
@@ -630,7 +631,10 @@ class FusionQueryService:
             stored_bank, stored_acct = split_scoped_bank_account(stored)
             if stored_acct != norm:
                 continue
-            if stored_bank and (not bank_key or stored_bank != bank_key):
+            # Only reject when both sides have a bank and they disagree.
+            # Unknown counterparty bank must still match by account digits
+            # (cross-bank transfers / scoped norms like 工商银行|6222087735).
+            if stored_bank and bank_key and stored_bank != bank_key:
                 continue
             return True
         return False
@@ -682,6 +686,7 @@ class FusionQueryService:
                     summary=str(row[9] or row[10] or ""),
                     direction=direction,
                     batch_id=batch_id,
+                    counterparty_account=counterparty_acct,
                     source_ref={
                         "layer": "std",
                         "table": "std_bank_txn",
@@ -868,7 +873,11 @@ class FusionQueryService:
         a_accts = ids_a.get("bank_acct", set()) | ids_a.get("bank_card", set())
         for rec in records_a:
             if rec.record_type == "bank_txn":
-                if self._match_name(rec.counterparty, b_names) or self._match_acct(rec.counterparty, b_accts):
+                if (
+                    self._match_name(rec.counterparty, b_names)
+                    or self._match_acct(rec.counterparty_account, b_accts)
+                    or self._match_acct(rec.counterparty, b_accts)
+                ):
                     direct.append(rec)
             elif rec.record_type == "wechat":
                 if self._match_wechat(rec.counterparty, b_names) or self._match_name(rec.counterparty, b_names):
@@ -878,7 +887,11 @@ class FusionQueryService:
                     direct.append(rec)
         for rec in records_b:
             if rec.record_type == "bank_txn":
-                if self._match_name(rec.counterparty, a_names) or self._match_acct(rec.counterparty, a_accts):
+                if (
+                    self._match_name(rec.counterparty, a_names)
+                    or self._match_acct(rec.counterparty_account, a_accts)
+                    or self._match_acct(rec.counterparty, a_accts)
+                ):
                     direct.append(rec)
             elif rec.record_type == "wechat":
                 if self._match_wechat(rec.counterparty, a_names) or self._match_name(rec.counterparty, a_names):
