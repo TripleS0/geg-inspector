@@ -3,9 +3,10 @@ import {
   ExportOutlined,
   FolderAddOutlined,
   FolderOpenOutlined,
+  LogoutOutlined,
 } from "@ant-design/icons";
 import { useLocation, useNavigate } from "react-router-dom";
-import { CaseInfo, HealthInfo, emitCaseChanged, persistSelectedCaseId } from "../../api";
+import { AuthUser, CaseInfo, HealthInfo, emitCaseChanged, persistSelectedCaseId } from "../../api";
 
 const { Text } = Typography;
 
@@ -17,7 +18,9 @@ interface GlobalCaseBarProps {
   selectedCase: CaseInfo | null;
   health: HealthInfo | null;
   error: string;
+  currentUser: AuthUser;
   onCaseChange: (caseId: number) => void;
+  onLogout: () => void;
 }
 
 function resolveCaseAction(pathname: string): CaseAction | null {
@@ -33,7 +36,9 @@ function GlobalCaseBar({
   selectedCase,
   health,
   error,
+  currentUser,
   onCaseChange,
+  onLogout,
 }: GlobalCaseBarProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -44,6 +49,7 @@ function GlobalCaseBar({
   };
 
   const segmentedValue = activeAction ?? "__none__";
+  const displayName = currentUser.display_name || currentUser.username;
 
   return (
     <div className="global-case-bar">
@@ -110,6 +116,19 @@ function GlobalCaseBar({
         <Tooltip title={health?.db_path || error || "等待后端连接"}>
           <span className={`backend-dot ${health ? "online" : error ? "offline" : "pending"}`} />
         </Tooltip>
+
+        <Tooltip title={`${displayName}${currentUser.role === "admin" ? "（管理员）" : ""}`}>
+          <Text className="header-user-name">{displayName}</Text>
+        </Tooltip>
+        <Button
+          type="text"
+          size="small"
+          className="header-logout"
+          icon={<LogoutOutlined />}
+          onClick={onLogout}
+        >
+          退出
+        </Button>
 
         {activeAction ? (
           <Button type="link" className="global-case-back" onClick={() => navigate("/fusion-cockpit")}>

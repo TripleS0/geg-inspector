@@ -415,6 +415,22 @@ VALUES (4, 'Fusion model config per case for event management');
 INSERT OR IGNORE INTO meta_schema_version (version, description)
 VALUES (5, 'Bank catalog, file ownership and per-Sheet template snapshots');
 
+CREATE TABLE IF NOT EXISTS app_user (
+    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'user',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_user_role ON app_user(role, is_active);
+
+INSERT OR IGNORE INTO meta_schema_version (version, description)
+VALUES (6, 'Application user accounts for login and admin user management');
+
 INSERT OR IGNORE INTO cfg_risk_rule (rule_code, rule_name, enabled, weight, params_json, version) VALUES
 ('R001', '围标疑似', 1, 1.0, '{"min_shared_inquiries":3,"min_companies_together":3,"note":"同一批项目中多家企业高频共同参标"}', 1),
 ('R002', '串标疑似', 1, 1.0, '{"min_inquiries":3,"min_pair_overlap_ratio":0.8,"note":"企业对在多个项目中高度同步出现"}', 1),

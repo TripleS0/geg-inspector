@@ -34,6 +34,13 @@ class BackendApiTests(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         self.client = TestClient(backend_main.app)
+        login = self.client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin123"},
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        token = login.json()["access_token"]
+        self.client.headers.update({"Authorization": f"Bearer {token}"})
 
     def tearDown(self) -> None:
         if self._old_db is None:

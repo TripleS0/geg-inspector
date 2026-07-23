@@ -487,6 +487,22 @@ export interface HealthInfo {
   exports_dir: string;
 }
 
+export interface AuthUser {
+  user_id: number;
+  username: string;
+  display_name: string;
+  role: "admin" | "user" | string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+}
+
 export interface QichachaQueryResult {
   run_id: string;
   rows: Record<string, unknown>[];
@@ -871,17 +887,66 @@ const API_BASE = (() => {
   return "";
 })();
 
+export const AUTH_TOKEN_KEY = "datafusionx.authToken";
+export const AUTH_CHANGED_EVENT = "datafusionx.authChanged";
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export function setAuthToken(token: string | null) {
+  const prev = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (token) {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+  if (prev !== token) {
+    window.dispatchEvent(new CustomEvent(AUTH_CHANGED_EVENT));
+  }
+}
+
+export function authHeaders(extra?: HeadersInit): HeadersInit {
+  const token = getAuthToken();
+  const base: Record<string, string> = {};
+  if (token) base.Authorization = `Bearer ${token}`;
+  return { ...base, ...(extra || {}) };
+}
+
+function redirectToLogin() {
+  setAuthToken(null);
+  const hash = window.location.hash || "";
+  if (!hash.includes("/login")) {
+    window.location.hash = "#/login";
+  }
+}
+
 async function http<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(authHeaders() as Record<string, string>),
+    ...((options.headers || {}) as Record<string, string>),
+  };
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
     ...options,
+    headers,
   });
+  if (res.status === 401) {
+    if (!path.startsWith("/api/auth/login")) {
+      redirectToLogin();
+    }
+    let detail = "未登录或登录已失效";
+    try {
+      const data = await res.json();
+      detail = (data?.detail as string) || detail;
+    } catch {
+      // keep default
+    }
+    throw new Error(`401 ${detail}`);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -895,8 +960,60 @@ async function http<T>(
   return (await res.json()) as T;
 }
 
+async function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(options.headers || {});
+  const token = getAuthToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (res.status === 401) {
+    redirectToLogin();
+  }
+  return res;
+}
+
 export const api = {
   health: () => http<HealthInfo>("/api/health"),
+
+  login: (username: string, password: string) =>
+    http<LoginResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+
+  me: () => http<AuthUser>("/api/auth/me"),
+
+  listUsers: () => http<{ items: AuthUser[] }>("/api/users"),
+
+  createUser: (payload: {
+    username: string;
+    password: string;
+    display_name?: string;
+    role?: string;
+    is_active?: boolean;
+  }) =>
+    http<AuthUser>("/api/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateUser: (
+    userId: number,
+    payload: {
+      display_name?: string;
+      role?: string;
+      is_active?: boolean;
+      password?: string;
+    }
+  ) =>
+    http<AuthUser>(`/api/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteUser: (userId: number) =>
+    http<{ status: string; user_id: number }>(`/api/users/${userId}`, { method: "DELETE" }),
 
   listBatches: (sourceType?: string) =>
     http<{ items: BatchInfo[] }>(
@@ -981,7 +1098,7 @@ export const api = {
     }
     form.append("layout_profile_id", layoutProfileId);
     form.append("bank_name", bankName);
-    const res = await fetch(`${API_BASE}/api/bank-ocr/upload`, { method: "POST", body: form });
+    const res = await authFetch(`/api/bank-ocr/upload`, { method: "POST", body: form });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`${res.status} ${text}`);
@@ -994,8 +1111,11 @@ export const api = {
 
   getBankOcrJob: (jobId: string) => http<BankOcrJob>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}`),
 
-  bankOcrPageImageUrl: (jobId: string, pageIndex: number) =>
-    `${API_BASE}/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/pages/${pageIndex}/image`,
+  bankOcrPageImageUrl: (jobId: string, pageIndex: number) => {
+    const token = getAuthToken();
+    const base = `${API_BASE}/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/pages/${pageIndex}/image`;
+    return token ? `${base}?access_token=${encodeURIComponent(token)}` : base;
+  },
 
   saveBankOcrRows: (jobId: string, rows: BankOcrRow[]) =>
     http<BankOcrJob>(`/api/bank-ocr/jobs/${encodeURIComponent(jobId)}/rows`, {
@@ -1031,7 +1151,7 @@ export const api = {
   uploadDesensitizationFiles: async (files: File[]) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
-    const res = await fetch(`${API_BASE}/api/desensitize/upload`, { method: "POST", body: form });
+    const res = await authFetch(`/api/desensitize/upload`, { method: "POST", body: form });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`${res.status} ${text}`);
@@ -1081,7 +1201,7 @@ export const api = {
     ),
 
   exportBankRecords: async (batchId: string, filters: BankFilter, fileName?: string) => {
-    const res = await fetch(`${API_BASE}/api/bank/${encodeURIComponent(batchId)}/records/export`, {
+    const res = await authFetch(`/api/bank/${encodeURIComponent(batchId)}/records/export`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...filters, file_name: fileName || "" }),
@@ -1178,7 +1298,7 @@ export const api = {
     fileName: string,
     sheetName = "明细"
   ) => {
-    const res = await fetch(`${API_BASE}/api/export/rows`, {
+    const res = await authFetch(`/api/export/rows`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows, columns, file_name: fileName, sheet_name: sheetName }),
@@ -1204,7 +1324,7 @@ export const api = {
     }>,
     fileName: string
   ) => {
-    const res = await fetch(`${API_BASE}/api/export/rows`, {
+    const res = await authFetch(`/api/export/rows`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sheets, file_name: fileName }),
@@ -1501,7 +1621,7 @@ export async function analyzeBankTemplateSample(params: {
   if (params.headerRow0based !== null && params.headerRow0based !== undefined) {
     form.append("header_row_0based", String(params.headerRow0based));
   }
-  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample`, {
+  const res = await authFetch(`/api/bank-templates/analyze-sample`, {
     method: "POST",
     body: form,
   });
@@ -1531,7 +1651,7 @@ export async function analyzeBankTemplateOcrSample(params: {
   if (params.layoutProfileId) {
     form.append("layout_profile_id", params.layoutProfileId);
   }
-  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-ocr-sample`, {
+  const res = await authFetch(`/api/bank-templates/analyze-ocr-sample`, {
     method: "POST",
     body: form,
   });
@@ -1551,7 +1671,7 @@ export async function analyzeBankTemplateOcrSample(params: {
 export async function listBankTemplateSampleSheets(file: File): Promise<string[]> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample/sheets`, {
+  const res = await authFetch(`/api/bank-templates/analyze-sample/sheets`, {
     method: "POST",
     body: form,
   });
@@ -1572,7 +1692,7 @@ export async function listBankTemplateSampleSheets(file: File): Promise<string[]
 export async function previewBankImportFile(file: File): Promise<BankImportPreview> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE}/api/bank-templates/analyze-sample/sheets`, { method: "POST", body: form });
+  const res = await authFetch(`/api/bank-templates/analyze-sample/sheets`, { method: "POST", body: form });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { detail?: string };
     throw new Error(data.detail || `预览失败（${res.status}）`);
@@ -1600,7 +1720,7 @@ export async function queryQichachaBasicDetails(params: {
     form.append("column_letter", params.columnLetter.trim());
   }
   form.append("skip_header", params.skipHeader ? "1" : "0");
-  const res = await fetch(`${API_BASE}/api/qichacha/basic-details/query`, {
+  const res = await authFetch(`/api/qichacha/basic-details/query`, {
     method: "POST",
     body: form,
   });
@@ -1621,7 +1741,7 @@ export async function exportQichachaExcelFromRows(
   rows: Record<string, unknown>[],
   runId?: string | null
 ): Promise<{ blob: Blob; runId: string | null }> {
-  const res = await fetch(`${API_BASE}/api/qichacha/basic-details/export`, {
+  const res = await authFetch(`/api/qichacha/basic-details/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rows, run_id: runId || null }),

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button, Layout, Menu } from "antd";
+import { Button, Layout, Menu, Spin } from "antd";
 import {
   AlertOutlined,
   BankOutlined,
@@ -11,6 +11,7 @@ import {
   PartitionOutlined,
   PhoneOutlined,
   SettingOutlined,
+  TeamOutlined,
   WechatOutlined,
 } from "@ant-design/icons";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -32,6 +33,9 @@ import DesensitizationPage from "./pages/DesensitizationPage";
 import QichachaIcPage from "./pages/QichachaIcPage";
 import WechatAnalysisPage from "./pages/WechatAnalysisPage";
 import TelecomAnalysisPage from "./pages/TelecomAnalysisPage";
+import LoginPage from "./pages/LoginPage";
+import UserManagePage from "./pages/UserManagePage";
+import { useAuth } from "./auth/AuthContext";
 import {
   api,
   CaseInfo,
@@ -56,6 +60,7 @@ function LegacyDataManageRedirect({ suffix }: { suffix: string }) {
 }
 
 function App() {
+  const { user, loading: authLoading, isAdmin, logout } = useAuth();
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [error, setError] = useState<string>("");
   const [cases, setCases] = useState<CaseInfo[]>([]);
@@ -67,6 +72,7 @@ function App() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    if (!user) return;
     let active = true;
     const refresh = async () => {
       try {
@@ -82,7 +88,7 @@ function App() {
       active = false;
       window.clearInterval(id);
     };
-  }, []);
+  }, [user]);
 
   const applyCaseSelection = (items: CaseInfo[], preferredId?: number | null) => {
     const nextId = resolveSelectedCaseId(items, preferredId);
@@ -92,6 +98,7 @@ function App() {
   };
 
   useEffect(() => {
+    if (!user) return;
     let active = true;
     const refreshCases = async (preferredId?: number | null) => {
       try {
@@ -116,10 +123,11 @@ function App() {
       active = false;
       window.removeEventListener(CASE_CHANGED_EVENT, onCaseChanged);
     };
-  }, []);
+  }, [user]);
 
   const selectedKey = (() => {
     const path = location.pathname;
+    if (path.startsWith("/users")) return "users";
     if (path.startsWith("/fusion-cockpit/events")) return "fusion-events";
     if (path.startsWith("/fusion-cockpit/models")) return "fusion-models";
     if (path.startsWith("/fusion-cockpit")) return "fusion-cockpit";
@@ -168,7 +176,33 @@ function App() {
       { key: "data-dashboard", icon: <DashboardOutlined />, label: "数据看板" },
       { key: "data-manage", icon: <DatabaseOutlined />, label: "数据管理" },
     ] },
+    ...(isAdmin
+      ? [
+          {
+            type: "group" as const,
+            label: "系统",
+            children: [{ key: "users", icon: <TeamOutlined />, label: "用户管理" }],
+          },
+        ]
+      : []),
   ];
+
+  if (authLoading) {
+    return (
+      <div className="auth-loading">
+        <Spin size="large" tip="加载中…" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
 
   return (
     <Layout className="app-shell">
@@ -205,6 +239,7 @@ function App() {
               "fusion-models": "/fusion-cockpit/models",
               "data-dashboard": "/data-center",
               "data-manage": "/data-center/manage",
+              users: "/users",
             };
             if (routes[String(key)]) navigate(routes[String(key)]);
           }}
@@ -228,16 +263,23 @@ function App() {
             selectedCase={selectedCase}
             health={health}
             error={error}
+            currentUser={user}
             onCaseChange={setSelectedCaseId}
+            onLogout={() => {
+              logout();
+              navigate("/login", { replace: true });
+            }}
           />
         </Header>
         <Content className="app-content">
           <Routes>
+            <Route path="/login" element={<Navigate to="/fusion-cockpit" replace />} />
             <Route path="/" element={<Navigate to="/fusion-cockpit" replace />} />
             <Route path="/cases" element={<Navigate to="/fusion-cockpit/open" replace />} />
             <Route path="/import" element={<Navigate to="/fusion-cockpit/new" replace />} />
             <Route path="/batches" element={<Navigate to="/data-center/manage" replace />} />
             <Route path="/risk" element={<Navigate to="/commercial-analysis" replace />} />
+            <Route path="/users" element={<UserManagePage />} />
             <Route path="/person-linking" element={<PersonLinkingPage />} />
             <Route path="/fusion-cockpit/events" element={<FusionSectionPage section="events" />} />
             <Route path="/fusion-cockpit/models" element={<FusionSectionPage section="models" />} />

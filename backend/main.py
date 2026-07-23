@@ -15,11 +15,13 @@ BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.application.auth_use_cases import AuthUseCase, UserInfo
 from app.application.analysis_use_cases import (
     BankAnalysisUseCase,
     CommercialAnalysisUseCase,
@@ -67,6 +69,81 @@ from app.services.integration.qichacha_client import (
     qichacha_response_to_export_row,
     responses_to_excel_bytes,
 )
+
+
+class LoginPayload(BaseModel):
+    """Login credentials."""
+
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class UserCreatePayload(BaseModel):
+    """Admin create user payload."""
+
+    username: str = Field(..., min_length=2, max_length=64)
+    password: str = Field(..., min_length=6, max_length=128)
+    display_name: str = ""
+    role: str = "user"
+    is_active: bool = True
+
+
+class UserPatchPayload(BaseModel):
+    """Admin update user payload."""
+
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+AUTH_WHITELIST_PREFIXES = (
+    "/api/health",
+    "/api/auth/login",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Require Bearer JWT for non-whitelist API paths."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if request.method == "OPTIONS" or any(path == p or path.startswith(p + "/") for p in AUTH_WHITELIST_PREFIXES) or path in AUTH_WHITELIST_PREFIXES:
+            return await call_next(request)
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization") or ""
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        elif request.method == "GET":
+            token = (request.query_params.get("access_token") or "").strip()
+        if not token:
+            return JSONResponse(status_code=401, content={"detail": "未登录或登录已失效"})
+        try:
+            user = AuthUseCase().decode_token(token)
+        except ValueError as err:
+            return JSONResponse(status_code=401, content={"detail": str(err)})
+        request.state.user = user
+        return await call_next(request)
+
+
+def _current_user(request: Request) -> UserInfo:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="未登录或登录已失效")
+    return user
+
+
+def _require_admin(request: Request) -> UserInfo:
+    user = _current_user(request)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
 
 
 class ImportRequest(BaseModel):
@@ -779,7 +856,10 @@ def create_app() -> FastAPI:
     bootstrap_database()
     _ensure_r007_rule_row()
     _ensure_r008_rule_row()
+    AuthUseCase().ensure_default_admin()
     app = FastAPI(title="DataFusionX Offline Backend", version="0.1.0")
+    # AuthMiddleware is added after CORS so CORS runs first (last added = outermost).
+    app.add_middleware(AuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -802,6 +882,64 @@ def create_app() -> FastAPI:
             "db_path": str(client.db_path),
             "exports_dir": str(exports_dir()),
         }
+
+    @app.post("/api/auth/login")
+    def auth_login(payload: LoginPayload) -> Dict[str, Any]:
+        try:
+            token, user = AuthUseCase().login(payload.username, payload.password)
+        except ValueError as err:
+            raise HTTPException(status_code=401, detail=str(err)) from err
+        return {"access_token": token, "token_type": "bearer", "user": user.to_public_dict()}
+
+    @app.get("/api/auth/me")
+    def auth_me(request: Request) -> Dict[str, Any]:
+        return _current_user(request).to_public_dict()
+
+    @app.get("/api/users")
+    def list_users(request: Request) -> Dict[str, Any]:
+        _require_admin(request)
+        items = [u.to_public_dict() for u in AuthUseCase().list_users()]
+        return {"items": items}
+
+    @app.post("/api/users")
+    def create_user(request: Request, payload: UserCreatePayload) -> Dict[str, Any]:
+        _require_admin(request)
+        try:
+            user = AuthUseCase().create_user(
+                username=payload.username,
+                password=payload.password,
+                display_name=payload.display_name,
+                role=payload.role,
+                is_active=payload.is_active,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return user.to_public_dict()
+
+    @app.patch("/api/users/{user_id}")
+    def update_user(user_id: int, request: Request, payload: UserPatchPayload) -> Dict[str, Any]:
+        actor = _require_admin(request)
+        try:
+            user = AuthUseCase().update_user(
+                user_id,
+                actor=actor,
+                display_name=payload.display_name,
+                role=payload.role,
+                is_active=payload.is_active,
+                password=payload.password,
+            )
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return user.to_public_dict()
+
+    @app.delete("/api/users/{user_id}")
+    def delete_user(user_id: int, request: Request) -> Dict[str, Any]:
+        actor = _require_admin(request)
+        try:
+            AuthUseCase().delete_user(user_id, actor=actor)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        return {"status": "ok", "user_id": user_id}
 
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str) -> Dict[str, Any]:

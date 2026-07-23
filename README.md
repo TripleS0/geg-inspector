@@ -302,6 +302,8 @@ geg-inspector/
 ├── start.bat                             # Windows 一键启动
 ├── stop.bat                              # Windows 一键停止
 ├── start-mirror.bat                      # Windows 国内镜像启动
+├── dev.sh                                # macOS/Linux 本地前后端同时启动
+├── dev.bat                               # Windows 本地前后端同时启动
 └── version.txt                           # 项目版本号
 ```
 
@@ -458,6 +460,27 @@ Docker 模式下默认路径：
 
 ## 本地开发说明
 
+### 一键启动前后端（推荐）
+
+在仓库根目录执行：
+
+```bash
+./dev.sh
+```
+
+Windows：
+
+```bat
+dev.bat
+```
+
+会同时启动：
+
+- 后端：`http://127.0.0.1:8765`（自动 `--reload`）
+- 前端：`http://127.0.0.1:5173`
+
+按 `Ctrl+C`（macOS/Linux）可同时关闭两端。默认管理员账号：`admin` / `admin123`。
+
 ### 1. 安装后端依赖
 
 建议使用虚拟环境：
@@ -478,7 +501,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. 启动后端
+### 2. 单独启动后端
 
 ```bash
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765 --reload
@@ -503,7 +526,7 @@ cd frontend
 npm install
 ```
 
-### 4. 启动前端开发服务器
+### 4. 单独启动前端开发服务器
 
 ```bash
 npm run dev
